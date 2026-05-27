@@ -80,6 +80,22 @@ impl Document {
         self.awareness.doc()
     }
 
+    pub fn is_empty(&self, field_name: &str) -> bool {
+        let txn = self.doc().transact();
+        txn.get_map(field_name).is_none() && txn.get_text(field_name).is_none()
+            && txn.get_array(field_name).is_none()
+            && txn.get_xml_fragment(field_name).is_none()
+    }
+
+    pub fn merge(&self, documents: &[&Doc]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        for doc in documents {
+            let txn = doc.transact();
+            let update = txn.encode_state_as_update_v1(&yrs::StateVector::default());
+            self.apply_update(&update)?;
+        }
+        Ok(())
+    }
+
     pub async fn set_on_update(
         &self,
         callback: Arc<dyn Fn(Arc<Document>, Option<TransactionOrigin>, Vec<u8>) + Send + Sync>,

@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use yrs::Transact;
 
 use crate::document::Document;
 use crate::hocuspocus::Hocuspocus;
@@ -48,8 +49,14 @@ impl DirectConnection {
             .as_ref()
             .ok_or("direct connection closed")?;
 
+        // Wrap in a yrs transaction - the callback can use doc.doc().transact_mut()
+        // to make changes, matching the TS behavior where document.transact() is used
         transaction(doc);
         Ok(())
+    }
+
+    pub fn document(&self) -> Option<&Arc<Document>> {
+        self.document.as_ref()
     }
 
     pub async fn disconnect(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -73,7 +80,9 @@ impl DirectConnection {
                 .store_document_hooks(&document, store_payload, true)
                 .await;
 
-            if document.get_connections_count().await == 0 {
+            if document.get_connections_count().await == 0
+                && !document.is_save_mutex_locked().await
+            {
                 let disconnect_payload = OnDisconnectPayload {
                     clients_count: 0,
                     context: self.context.clone(),
