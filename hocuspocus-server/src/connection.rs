@@ -1,0 +1,308 @@
+use std::sync::Arc;
+use tokio::sync::{Mutex, RwLock};
+
+use hocuspocus_common::{self as common, WsReadyState};
+
+use crate::document::Document;
+use crate::encoding::Decoder;
+use crate::message_receiver::MessageReceiver;
+use crate::outgoing_message::OutgoingMessage;
+use crate::types::*;
+
+pub struct Connection {
+    pub id: String,
+    pub socket_id: String,
+    pub context: RwLock<Context>,
+    pub document: Arc<Document>,
+    pub request: RequestInfo,
+    pub read_only: bool,
+    pub session_id: Option<String>,
+    pub provider_version: Option<String>,
+    ws: Arc<dyn WebSocketSink>,
+    message_queue: Mutex<Vec<Vec<u8>>>,
+    processing: Mutex<()>,
+
+    on_close_callbacks:
+        RwLock<Vec<Arc<dyn Fn(Arc<Document>, Option<common::CloseEvent>) + Send + Sync>>>,
+    before_handle_message_callback:
+        RwLock<Option<Arc<dyn Fn(String, Vec<u8>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send>> + Send + Sync>>>,
+    before_sync_callback:
+        RwLock<Option<Arc<dyn Fn(String, u64, Vec<u8>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send>> + Send + Sync>>>,
+    stateless_callback:
+        RwLock<Option<Arc<dyn Fn(OnStatelessPayload) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send>> + Send + Sync>>>,
+    token_sync_callback:
+        RwLock<Option<Arc<dyn Fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send>> + Send + Sync>>>,
+}
+
+impl Connection {
+    pub fn new(
+        id: String,
+        ws: Arc<dyn WebSocketSink>,
+        request: RequestInfo,
+        document: Arc<Document>,
+        socket_id: String,
+        context: Context,
+        read_only: bool,
+        session_id: Option<String>,
+        provider_version: Option<String>,
+    ) -> Arc<Self> {
+        let conn = Arc::new(Self {
+            id,
+            socket_id,
+            context: RwLock::new(context),
+            document,
+            request,
+            read_only,
+            session_id,
+            provider_version,
+            ws,
+            message_queue: Mutex::new(Vec::new()),
+            processing: Mutex::new(()),
+            on_close_callbacks: RwLock::new(Vec::new()),
+            before_handle_message_callback: RwLock::new(None),
+            before_sync_callback: RwLock::new(None),
+            stateless_callback: RwLock::new(None),
+            token_sync_callback: RwLock::new(None),
+        });
+
+        conn
+    }
+
+    pub fn message_address(&self) -> String {
+        match &self.session_id {
+            Some(sid) => format!("{}\0{}", self.document.name, sid),
+            None => self.document.name.clone(),
+        }
+    }
+
+    pub async fn on_close(
+        &self,
+        callback: Arc<dyn Fn(Arc<Document>, Option<common::CloseEvent>) + Send + Sync>,
+    ) {
+        let mut cbs = self.on_close_callbacks.write().await;
+        cbs.push(callback);
+    }
+
+    pub async fn set_stateless_callback(
+        &self,
+        callback: Arc<dyn Fn(OnStatelessPayload) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send>> + Send + Sync>,
+    ) {
+        let mut cb = self.stateless_callback.write().await;
+        *cb = Some(callback);
+    }
+
+    pub async fn set_before_handle_message(
+        &self,
+        callback: Arc<dyn Fn(String, Vec<u8>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send>> + Send + Sync>,
+    ) {
+        let mut cb = self.before_handle_message_callback.write().await;
+        *cb = Some(callback);
+    }
+
+    pub async fn set_before_sync(
+        &self,
+        callback: Arc<dyn Fn(String, u64, Vec<u8>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send>> + Send + Sync>,
+    ) {
+        let mut cb = self.before_sync_callback.write().await;
+        *cb = Some(callback);
+    }
+
+    pub async fn set_token_sync_callback(
+        &self,
+        callback: Arc<dyn Fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send>> + Send + Sync>,
+    ) {
+        let mut cb = self.token_sync_callback.write().await;
+        *cb = Some(callback);
+    }
+
+    pub fn send(&self, message: &[u8]) {
+        let state = self.ws.ready_state();
+        if state == WsReadyState::Closing || state == WsReadyState::Closed {
+            self.close_sync(None);
+            return;
+        }
+
+        if let Err(_) = self.ws.send(message.to_vec()) {
+            self.close_sync(None);
+        }
+    }
+
+    pub fn send_stateless(&self, payload: &str) {
+        let msg = OutgoingMessage::new(&self.message_address()).write_stateless(payload);
+        self.send(&msg.to_vec());
+    }
+
+    pub fn request_token(&self) {
+        let msg = OutgoingMessage::new(&self.message_address()).write_token_sync_request();
+        self.send(&msg.to_vec());
+    }
+
+    pub fn close_sync(&self, _event: Option<common::CloseEvent>) {
+        // Simplified synchronous close - real close is async
+    }
+
+    pub async fn close(self: &Arc<Self>, event: Option<common::CloseEvent>) {
+        if self.document.has_connection(&self.id).await {
+            self.document.remove_connection(&self.id).await;
+
+            let cbs = self.on_close_callbacks.read().await;
+            for cb in cbs.iter() {
+                cb(self.document.clone(), event.clone());
+            }
+
+            let reason = event
+                .as_ref()
+                .map(|e| e.reason.as_str())
+                .unwrap_or("Server closed the connection");
+
+            let close_msg = OutgoingMessage::new(&self.message_address())
+                .write_close_message(reason);
+            self.send(&close_msg.to_vec());
+        }
+    }
+
+    async fn send_current_awareness(&self) {
+        if !self.document.has_awareness_states().await {
+            return;
+        }
+        let states = self.document.get_awareness_states().await;
+        let msg = OutgoingMessage::new(&self.message_address())
+            .create_awareness_update_message(&states, None);
+        self.send(&msg.to_vec());
+    }
+
+    pub async fn init_awareness(self: &Arc<Self>) {
+        self.send_current_awareness().await;
+    }
+
+    pub async fn handle_message(self: &Arc<Self>, data: Vec<u8>) {
+        let should_start_processing = {
+            let mut queue = self.message_queue.lock().await;
+            queue.push(data);
+            queue.len() == 1
+        };
+
+        if should_start_processing {
+            self.process_messages().await;
+        }
+    }
+
+    async fn process_messages(self: &Arc<Self>) {
+        let _guard = self.processing.lock().await;
+
+        loop {
+            let raw_update = {
+                let queue = self.message_queue.lock().await;
+                if queue.is_empty() {
+                    break;
+                }
+                queue[0].clone()
+            };
+
+            let mut decoder = Decoder::new(&raw_update);
+            let raw_key = match decoder.read_var_string() {
+                Ok(k) => k,
+                Err(_) => {
+                    let mut queue = self.message_queue.lock().await;
+                    if !queue.is_empty() {
+                        queue.remove(0);
+                    }
+                    continue;
+                }
+            };
+
+            let sep_idx = raw_key.find('\0');
+            let document_name = match sep_idx {
+                Some(idx) => &raw_key[..idx],
+                None => &raw_key,
+            };
+
+            if document_name != self.document.name {
+                let mut queue = self.message_queue.lock().await;
+                if !queue.is_empty() {
+                    queue.remove(0);
+                }
+                continue;
+            }
+
+            // Run beforeHandleMessage callback
+            {
+                let cb = self.before_handle_message_callback.read().await;
+                if let Some(ref callback) = *cb {
+                    if let Err(e) = callback(self.id.clone(), raw_update.clone()).await {
+                        tracing::error!(
+                            "closing connection {} because of exception: {:?}",
+                            self.socket_id,
+                            e
+                        );
+                        self.close(Some(common::reset_connection())).await;
+                        let mut queue = self.message_queue.lock().await;
+                        if !queue.is_empty() {
+                            queue.remove(0);
+                        }
+                        continue;
+                    }
+                }
+            }
+
+            let receiver = MessageReceiver::new(raw_update, None);
+            let result = receiver
+                .apply(
+                    &self.document,
+                    Some(&self.id),
+                    &self.message_address(),
+                    self.read_only,
+                    None,
+                )
+                .await;
+
+            if let Err(e) = result {
+                let err_msg = e.to_string();
+
+                if err_msg.starts_with("stateless:") {
+                    let payload = &err_msg["stateless:".len()..];
+                    let cb = self.stateless_callback.read().await;
+                    if let Some(ref callback) = *cb {
+                        let sp = OnStatelessPayload {
+                            connection_id: self.id.clone(),
+                            document_name: self.document.name.clone(),
+                            document: self.document.clone(),
+                            payload: payload.to_string(),
+                        };
+                        let _ = callback(sp).await;
+                    }
+                } else if err_msg.starts_with("token_sync:") {
+                    let token = &err_msg["token_sync:".len()..];
+                    let cb = self.token_sync_callback.read().await;
+                    if let Some(ref callback) = *cb {
+                        let _ = callback(token.to_string()).await;
+                    }
+                } else if err_msg == "close_requested" {
+                    self.close(Some(common::CloseEvent {
+                        code: 1000,
+                        reason: "provider_initiated".to_string(),
+                    }))
+                    .await;
+                } else {
+                    tracing::error!(
+                        "closing connection {} because of exception: {}",
+                        self.socket_id,
+                        err_msg
+                    );
+                    self.close(Some(common::reset_connection())).await;
+                }
+            }
+
+            {
+                let mut queue = self.message_queue.lock().await;
+                if !queue.is_empty() {
+                    queue.remove(0);
+                }
+            }
+        }
+    }
+
+    pub async fn wait_for_pending_messages(&self) {
+        let _guard = self.processing.lock().await;
+    }
+}

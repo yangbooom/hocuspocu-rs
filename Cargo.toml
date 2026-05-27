@@ -1,0 +1,7 @@
+[workspace]
+members = ["hocuspocus-common", "hocuspocus-server"]
+resolver = "2"
+
+[workspace.dependencies]
+yrs = "0.21"
+tokio = { version = "1", features = ["full"] }
