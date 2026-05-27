@@ -6,7 +6,7 @@ description = "Rust port of @hocuspocus/server - real-time collaborative backend
 
 [dependencies]
 hocuspocus-common = { path = "../hocuspocus-common" }
-yrs = "0.21"
+yrs = { version = "0.21", features = ["sync"] }
 tokio = { workspace = true }
 tokio-tungstenite = "0.26"
 futures-util = "0.3"

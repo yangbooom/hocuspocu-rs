@@ -374,15 +374,14 @@ impl Hocuspocus {
 
         // Set up beforeHandleAwareness callback
         let hp_bha = self.clone();
-        let _doc_bha = document.clone();
         document
             .set_before_handle_awareness(Arc::new(
                 move |doc,
-                      states: HashMap<u64, HashMap<String, serde_json::Value>>,
+                      update_data: Vec<u8>,
                       origin: Option<TransactionOrigin>| {
                     let hp = hp_bha.clone();
                     let doc = doc.clone();
-                    let states = states.clone();
+                    let update_data = update_data.clone();
                     let origin = origin.clone();
                     Box::pin(async move {
                         let connection_id = match &origin {
@@ -398,14 +397,14 @@ impl Hocuspocus {
                             document: doc.clone(),
                             document_name: doc.name.clone(),
                             request: RequestInfo::default(),
-                            states: states.clone(),
+                            states: HashMap::new(),
                             socket_id: String::new(),
                             transaction_origin: origin,
                             connection_id,
                         };
 
                         let _ = hp.hooks_before_handle_awareness(&mut payload).await;
-                        Ok(payload.states)
+                        Ok(update_data)
                     })
                 },
             ))

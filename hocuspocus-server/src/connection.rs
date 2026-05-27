@@ -162,13 +162,14 @@ impl Connection {
     }
 
     async fn send_current_awareness(&self) {
-        if !self.document.has_awareness_states().await {
+        if !self.document.has_awareness_states() {
             return;
         }
-        let states = self.document.get_awareness_states().await;
-        let msg = OutgoingMessage::new(&self.message_address())
-            .create_awareness_update_message(&states, None);
-        self.send(&msg.to_vec());
+        if let Ok(update_data) = self.document.encode_awareness_update_all() {
+            let msg = OutgoingMessage::new(&self.message_address())
+                .create_awareness_update_message(&update_data);
+            self.send(&msg.to_vec());
+        }
     }
 
     pub async fn init_awareness(self: &Arc<Self>) {

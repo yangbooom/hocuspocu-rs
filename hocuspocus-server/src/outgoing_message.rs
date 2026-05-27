@@ -1,7 +1,6 @@
-use crate::encoding::{self};
+use crate::encoding;
 use crate::types::MessageType;
 use hocuspocus_common::{self as common};
-use std::collections::HashMap;
 
 pub struct OutgoingMessage {
     encoder: Vec<u8>,
@@ -32,22 +31,11 @@ impl OutgoingMessage {
         self
     }
 
-    pub fn create_awareness_update_message(
-        mut self,
-        states: &HashMap<u64, HashMap<String, serde_json::Value>>,
-        changed_clients: Option<&[u64]>,
-    ) -> Self {
+    pub fn create_awareness_update_message(mut self, update_data: &[u8]) -> Self {
         self.message_type = Some(MessageType::Awareness);
         self.category = Some("Update".to_string());
-
-        let clients: Vec<u64> = changed_clients
-            .map(|c| c.to_vec())
-            .unwrap_or_else(|| states.keys().copied().collect());
-
-        let update = encode_awareness_states(states, &clients);
-
         encoding::write_var_uint(&mut self.encoder, MessageType::Awareness as u64);
-        encoding::write_var_uint8_array(&mut self.encoder, &update);
+        encoding::write_var_uint8_array(&mut self.encoder, update_data);
         self
     }
 
@@ -85,7 +73,6 @@ impl OutgoingMessage {
 
     pub fn write_first_sync_step_for(mut self, state_vector: &[u8]) -> Self {
         self.category = Some("SyncStep1".to_string());
-        // SyncStep1: write type=0, then the state vector
         encoding::write_var_uint(&mut self.encoder, 0); // messageYjsSyncStep1
         encoding::write_var_uint8_array(&mut self.encoder, state_vector);
         self
@@ -136,28 +123,4 @@ impl OutgoingMessage {
     pub fn to_vec(self) -> Vec<u8> {
         self.encoder
     }
-}
-
-fn encode_awareness_states(
-    states: &HashMap<u64, HashMap<String, serde_json::Value>>,
-    clients: &[u64],
-) -> Vec<u8> {
-    let mut buf = Vec::new();
-    let filtered: Vec<_> = clients
-        .iter()
-        .filter_map(|id| states.get(id).map(|s| (*id, s)))
-        .collect();
-
-    encoding::write_var_uint(&mut buf, filtered.len() as u64);
-    for (client_id, state) in filtered {
-        encoding::write_var_uint(&mut buf, client_id);
-        let clock = state
-            .get("__clock")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        encoding::write_var_uint(&mut buf, clock);
-        let json = serde_json::to_string(state).unwrap_or_else(|_| "{}".to_string());
-        encoding::write_var_string(&mut buf, &json);
-    }
-    buf
 }

@@ -71,12 +71,15 @@ impl MessageReceiver {
                     .await?;
             }
             Ok(MessageType::QueryAwareness) => {
-                let states = document.get_awareness_states().await;
-                let msg = OutgoingMessage::new(message_address)
-                    .create_awareness_update_message(&states, None);
+                if let Ok(update_data) = document.encode_awareness_update_all() {
+                    let mut msg = Vec::new();
+                    crate::encoding::write_var_string(&mut msg, message_address);
+                    crate::encoding::write_var_uint(&mut msg, MessageType::Awareness as u64);
+                    crate::encoding::write_var_uint8_array(&mut msg, &update_data);
 
-                if let Some(reply_fn) = reply {
-                    reply_fn(msg.to_vec());
+                    if let Some(reply_fn) = reply {
+                        reply_fn(msg);
+                    }
                 }
             }
             Ok(MessageType::Stateless) => {
@@ -136,7 +139,7 @@ impl MessageReceiver {
                 let remote_sv = yrs::StateVector::decode_v1(&remote_sv_data)?;
 
                 let update = {
-                    let txn = document.doc.transact();
+                    let txn = document.doc().transact();
                     txn.encode_state_as_update_v1(&remote_sv)
                 };
 
