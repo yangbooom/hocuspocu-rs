@@ -294,6 +294,10 @@ impl Document {
         txn.encode_state_as_update_v1(&yrs::StateVector::default())
     }
 
+    pub async fn is_save_mutex_locked(&self) -> bool {
+        self.save_mutex.try_lock().is_err()
+    }
+
     pub fn encode_state_vector(&self) -> Vec<u8> {
         let txn = self.doc().transact();
         txn.state_vector().encode_v1()

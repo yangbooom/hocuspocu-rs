@@ -304,16 +304,22 @@ impl Hocuspocus {
             connection_config: connection_config.clone(),
         };
 
-        match self.hooks_on_load_document(&load_payload).await {
-            Ok(Some(LoadedDocument::Update(update))) => {
-                if let Err(e) = document.apply_update(&update) {
-                    tracing::error!("Failed to apply loaded document update: {:?}", e);
+        {
+            let config = self.configuration.read().await;
+            for ext in &config.extensions {
+                match ext.on_load_document(&load_payload).await {
+                    Ok(Some(LoadedDocument::Update(update))) => {
+                        if let Err(e) = document.apply_update(&update) {
+                            tracing::error!("Failed to apply loaded document update: {:?}", e);
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        drop(config);
+                        self.close_connections(Some(document_name)).await;
+                        return Err(e);
+                    }
                 }
-            }
-            Ok(None) => {}
-            Err(e) => {
-                self.close_connections(Some(document_name)).await;
-                return Err(e);
             }
         }
 
@@ -410,6 +416,33 @@ impl Hocuspocus {
             ))
             .await;
 
+        // Set up awareness update observer to fire onAwarenessUpdate hook
+        let hp_aw = self.clone();
+        let doc_aw = document.clone();
+        let doc_name_aw = document_name.to_string();
+        let _awareness_sub = document.awareness.on_update(move |awareness, event, origin| {
+            let hp = hp_aw.clone();
+            let doc = doc_aw.clone();
+            let doc_name = doc_name_aw.clone();
+            let added = event.added().to_vec();
+            let updated = event.updated().to_vec();
+            let removed = event.removed().to_vec();
+            let connection_id = None; // origin handling simplified
+
+            tokio::spawn(async move {
+                let payload = OnAwarenessUpdatePayload {
+                    document: doc.clone(),
+                    document_name: doc_name,
+                    transaction_origin: None,
+                    connection_id,
+                    added,
+                    updated,
+                    removed,
+                };
+                let _ = hp.hooks_on_awareness_update(&payload).await;
+            });
+        });
+
         Ok(document)
     }
 
@@ -483,7 +516,8 @@ impl Hocuspocus {
         let debounce_id = format!("onStoreDocument-{}", document.name);
 
         let has_pending_work = self.debouncer.is_debounced(&debounce_id).await
-            || self.debouncer.is_currently_executing(&debounce_id).await;
+            || self.debouncer.is_currently_executing(&debounce_id).await
+            || document.is_save_mutex_locked().await;
 
         !has_pending_work && document.get_connections_count().await == 0
     }
@@ -504,7 +538,10 @@ impl Hocuspocus {
 
         {
             let unloading = self.unloading_documents.read().await;
-            if unloading.contains_key(document_name) {
+            if let Some(lock) = unloading.get(document_name) {
+                let lock = lock.clone();
+                drop(unloading);
+                let _guard = lock.lock().await;
                 return;
             }
         }
