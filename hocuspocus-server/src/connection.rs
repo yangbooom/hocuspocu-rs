@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 
@@ -18,8 +19,9 @@ pub struct Connection {
     pub read_only: bool,
     pub session_id: Option<String>,
     pub provider_version: Option<String>,
+    message_address: String,
     ws: Arc<dyn WebSocketSink>,
-    message_queue: Mutex<Vec<Vec<u8>>>,
+    message_queue: Mutex<VecDeque<Vec<u8>>>,
     processing: Mutex<()>,
 
     on_close_callbacks:
@@ -32,6 +34,7 @@ pub struct Connection {
         RwLock<Option<Arc<dyn Fn(OnStatelessPayload) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send>> + Send + Sync>>>,
     token_sync_callback:
         RwLock<Option<Arc<dyn Fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send>> + Send + Sync>>>,
+    closed: std::sync::atomic::AtomicBool,
 }
 
 impl Connection {
@@ -46,7 +49,12 @@ impl Connection {
         session_id: Option<String>,
         provider_version: Option<String>,
     ) -> Arc<Self> {
-        let conn = Arc::new(Self {
+        let message_address = match &session_id {
+            Some(sid) => format!("{}\0{}", document.name, sid),
+            None => document.name.clone(),
+        };
+
+        Arc::new(Self {
             id,
             socket_id,
             context: RwLock::new(context),
@@ -55,24 +63,21 @@ impl Connection {
             read_only,
             session_id,
             provider_version,
+            message_address,
             ws,
-            message_queue: Mutex::new(Vec::new()),
+            message_queue: Mutex::new(VecDeque::new()),
             processing: Mutex::new(()),
             on_close_callbacks: RwLock::new(Vec::new()),
             before_handle_message_callback: RwLock::new(None),
             before_sync_callback: RwLock::new(None),
             stateless_callback: RwLock::new(None),
             token_sync_callback: RwLock::new(None),
-        });
-
-        conn
+            closed: std::sync::atomic::AtomicBool::new(false),
+        })
     }
 
-    pub fn message_address(&self) -> String {
-        match &self.session_id {
-            Some(sid) => format!("{}\0{}", self.document.name, sid),
-            None => self.document.name.clone(),
-        }
+    pub fn message_address(&self) -> &str {
+        &self.message_address
     }
 
     pub async fn on_close(
@@ -116,29 +121,33 @@ impl Connection {
     }
 
     pub fn send(&self, message: &[u8]) {
-        let state = self.ws.ready_state();
-        if state == WsReadyState::Closing || state == WsReadyState::Closed {
-            self.close_sync(None);
+        if self.closed.load(std::sync::atomic::Ordering::Relaxed) {
             return;
         }
 
-        if let Err(_) = self.ws.send(message.to_vec()) {
-            self.close_sync(None);
+        let state = self.ws.ready_state();
+        if state == WsReadyState::Closing || state == WsReadyState::Closed {
+            self.mark_closed();
+            return;
+        }
+
+        if self.ws.send(message.to_vec()).is_err() {
+            self.mark_closed();
         }
     }
 
+    fn mark_closed(&self) {
+        self.closed.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
     pub fn send_stateless(&self, payload: &str) {
-        let msg = OutgoingMessage::new(&self.message_address()).write_stateless(payload);
+        let msg = OutgoingMessage::new(self.message_address()).write_stateless(payload);
         self.send(&msg.to_vec());
     }
 
     pub fn request_token(&self) {
-        let msg = OutgoingMessage::new(&self.message_address()).write_token_sync_request();
+        let msg = OutgoingMessage::new(self.message_address()).write_token_sync_request();
         self.send(&msg.to_vec());
-    }
-
-    pub fn close_sync(&self, _event: Option<common::CloseEvent>) {
-        // Simplified synchronous close - real close is async
     }
 
     pub async fn close(self: &Arc<Self>, event: Option<common::CloseEvent>) {
@@ -155,9 +164,10 @@ impl Connection {
                 .map(|e| e.reason.as_str())
                 .unwrap_or("Server closed the connection");
 
-            let close_msg = OutgoingMessage::new(&self.message_address())
+            let close_msg = OutgoingMessage::new(self.message_address())
                 .write_close_message(reason);
             self.send(&close_msg.to_vec());
+            self.mark_closed();
         }
     }
 
@@ -166,7 +176,7 @@ impl Connection {
             return;
         }
         if let Ok(update_data) = self.document.encode_awareness_update_all() {
-            let msg = OutgoingMessage::new(&self.message_address())
+            let msg = OutgoingMessage::new(self.message_address())
                 .create_awareness_update_message(&update_data);
             self.send(&msg.to_vec());
         }
@@ -176,10 +186,17 @@ impl Connection {
         self.send_current_awareness().await;
     }
 
+    pub async fn get_before_sync_callback(
+        &self,
+    ) -> Option<Arc<dyn Fn(String, u64, Vec<u8>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send>> + Send + Sync>> {
+        let cb = self.before_sync_callback.read().await;
+        cb.clone()
+    }
+
     pub async fn handle_message(self: &Arc<Self>, data: Vec<u8>) {
         let should_start_processing = {
             let mut queue = self.message_queue.lock().await;
-            queue.push(data);
+            queue.push_back(data);
             queue.len() == 1
         };
 
@@ -194,10 +211,10 @@ impl Connection {
         loop {
             let raw_update = {
                 let queue = self.message_queue.lock().await;
-                if queue.is_empty() {
-                    break;
+                match queue.front() {
+                    Some(data) => data.clone(),
+                    None => break,
                 }
-                queue[0].clone()
             };
 
             let mut decoder = Decoder::new(&raw_update);
@@ -205,9 +222,7 @@ impl Connection {
                 Ok(k) => k,
                 Err(_) => {
                     let mut queue = self.message_queue.lock().await;
-                    if !queue.is_empty() {
-                        queue.remove(0);
-                    }
+                    queue.pop_front();
                     continue;
                 }
             };
@@ -220,13 +235,10 @@ impl Connection {
 
             if document_name != self.document.name {
                 let mut queue = self.message_queue.lock().await;
-                if !queue.is_empty() {
-                    queue.remove(0);
-                }
+                queue.pop_front();
                 continue;
             }
 
-            // Run beforeHandleMessage callback
             {
                 let cb = self.before_handle_message_callback.read().await;
                 if let Some(ref callback) = *cb {
@@ -238,9 +250,7 @@ impl Connection {
                         );
                         self.close(Some(common::reset_connection())).await;
                         let mut queue = self.message_queue.lock().await;
-                        if !queue.is_empty() {
-                            queue.remove(0);
-                        }
+                        queue.pop_front();
                         continue;
                     }
                 }
@@ -251,9 +261,18 @@ impl Connection {
                 .apply(
                     &self.document,
                     Some(&self.id),
-                    &self.message_address(),
+                    self.message_address(),
                     self.read_only,
                     None,
+                    self.before_sync_callback.read().await.as_ref().map(|cb| {
+                        let cb = cb.clone();
+                        let id = self.id.clone();
+                        move |sync_type: u64, payload: Vec<u8>| -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send>> {
+                            let cb = cb.clone();
+                            let id = id.clone();
+                            Box::pin(async move { cb(id, sync_type, payload).await })
+                        }
+                    }),
                 )
                 .await;
 
@@ -296,9 +315,7 @@ impl Connection {
 
             {
                 let mut queue = self.message_queue.lock().await;
-                if !queue.is_empty() {
-                    queue.remove(0);
-                }
+                queue.pop_front();
             }
         }
     }

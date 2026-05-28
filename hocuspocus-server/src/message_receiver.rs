@@ -13,6 +13,8 @@ const MESSAGE_YJS_SYNC_STEP1: u64 = 0;
 const MESSAGE_YJS_SYNC_STEP2: u64 = 1;
 const MESSAGE_YJS_UPDATE: u64 = 2;
 
+type BeforeSyncFn = dyn Fn(u64, Vec<u8>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send>> + Send + Sync;
+
 pub struct MessageReceiver {
     data: Vec<u8>,
     default_transaction_origin: Option<TransactionOrigin>,
@@ -33,6 +35,7 @@ impl MessageReceiver {
         message_address: &str,
         read_only: bool,
         reply: Option<&(dyn Fn(Vec<u8>) + Send + Sync)>,
+        before_sync: Option<impl Fn(u64, Vec<u8>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send>> + Send + Sync>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut decoder = Decoder::new(&self.data);
 
@@ -41,8 +44,7 @@ impl MessageReceiver {
 
         match MessageType::try_from(msg_type) {
             Ok(MessageType::Sync) | Ok(MessageType::SyncReply) => {
-                let is_sync_reply = msg_type == MessageType::SyncReply as u64;
-                let request_first_sync = !is_sync_reply;
+                let request_first_sync = msg_type != MessageType::SyncReply as u64;
 
                 self.read_sync_message(
                     &mut decoder,
@@ -52,6 +54,7 @@ impl MessageReceiver {
                     read_only,
                     reply,
                     request_first_sync,
+                    &before_sync,
                 )
                 .await?;
             }
@@ -72,19 +75,16 @@ impl MessageReceiver {
             }
             Ok(MessageType::QueryAwareness) => {
                 if let Ok(update_data) = document.encode_awareness_update_all() {
-                    let mut msg = Vec::new();
-                    crate::encoding::write_var_string(&mut msg, message_address);
-                    crate::encoding::write_var_uint(&mut msg, MessageType::Awareness as u64);
-                    crate::encoding::write_var_uint8_array(&mut msg, &update_data);
+                    let msg = OutgoingMessage::new(message_address)
+                        .create_awareness_update_message(&update_data);
 
                     if let Some(reply_fn) = reply {
-                        reply_fn(msg);
+                        reply_fn(msg.to_vec());
                     }
                 }
             }
             Ok(MessageType::Stateless) => {
                 let payload = decoder.read_var_string()?;
-                // Handled by connection callback, no direct handling here
                 return Err(format!("stateless:{}", payload).into());
             }
             Ok(MessageType::BroadcastStateless) => {
@@ -121,7 +121,7 @@ impl MessageReceiver {
         Ok(())
     }
 
-    async fn read_sync_message(
+    async fn read_sync_message<F>(
         &self,
         decoder: &mut Decoder<'_>,
         document: &Arc<Document>,
@@ -130,8 +130,18 @@ impl MessageReceiver {
         read_only: bool,
         reply: Option<&(dyn Fn(Vec<u8>) + Send + Sync)>,
         request_first_sync: bool,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        before_sync: &Option<F>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+    where
+        F: Fn(u64, Vec<u8>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send>> + Send + Sync,
+    {
         let sync_type = decoder.read_var_uint()?;
+
+        // Call beforeSync hook if available
+        if let Some(ref callback) = before_sync {
+            let payload = decoder.peek_var_uint8_array().unwrap_or_default();
+            callback(sync_type, payload).await?;
+        }
 
         match sync_type {
             MESSAGE_YJS_SYNC_STEP1 => {
@@ -143,7 +153,6 @@ impl MessageReceiver {
                     txn.encode_state_as_update_v1(&remote_sv)
                 };
 
-                // Send SyncStep2 (our diff based on their state vector)
                 let sync_step2 = OutgoingMessage::new(message_address)
                     .create_sync_message()
                     .write_sync_step2(&update);
@@ -154,7 +163,6 @@ impl MessageReceiver {
                     reply_fn(sync_step2.to_vec());
                 }
 
-                // Also send our SyncStep1 to get their updates
                 if request_first_sync {
                     let sv = document.encode_state_vector();
                     let sync_msg = if connection_id.is_some() {
@@ -174,38 +182,12 @@ impl MessageReceiver {
                     }
                 }
             }
-            MESSAGE_YJS_SYNC_STEP2 => {
+            MESSAGE_YJS_SYNC_STEP2 | MESSAGE_YJS_UPDATE => {
                 if read_only {
                     let _update_data = decoder.read_var_uint8_array()?;
                     let ack_msg = OutgoingMessage::new(message_address).write_sync_status(false);
                     if let Some(conn_id) = connection_id {
                         document.send_to_connection(conn_id, &ack_msg.to_vec()).await;
-                    }
-                    return Ok(());
-                }
-
-                let update_data = decoder.read_var_uint8_array()?;
-                let origin = connection_id.map(|id| {
-                    TransactionOrigin::Connection(ConnectionTransactionOrigin {
-                        connection_id: id.to_string(),
-                    })
-                });
-
-                document.apply_update(&update_data)?;
-
-                if let Some(conn_id) = connection_id {
-                    let ack = OutgoingMessage::new(message_address).write_sync_status(true);
-                    document.send_to_connection(conn_id, &ack.to_vec()).await;
-                }
-
-                document.handle_update(update_data, origin).await;
-            }
-            MESSAGE_YJS_UPDATE => {
-                if read_only {
-                    if let Some(conn_id) = connection_id {
-                        let ack =
-                            OutgoingMessage::new(message_address).write_sync_status(false);
-                        document.send_to_connection(conn_id, &ack.to_vec()).await;
                     }
                     return Ok(());
                 }

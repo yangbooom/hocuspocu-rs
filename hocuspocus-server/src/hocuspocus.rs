@@ -61,6 +61,13 @@ impl Hocuspocus {
         let _ = self.hooks_on_configure(&on_configure_payload).await;
     }
 
+    fn get_timeout(&self) -> u64 {
+        match self.configuration.try_read() {
+            Ok(config) => config.timeout,
+            Err(_) => 60_000, // default
+        }
+    }
+
     pub async fn get_documents_count(&self) -> usize {
         let docs = self.documents.read().await;
         docs.len()
@@ -112,11 +119,7 @@ impl Hocuspocus {
         request: RequestInfo,
         default_context: Option<Context>,
     ) -> Arc<ClientConnection> {
-        let timeout = {
-            let config =
-                tokio::task::block_in_place(|| self.configuration.blocking_read());
-            config.timeout
-        };
+        let timeout = self.get_timeout();
 
         let ctx = default_context.unwrap_or_else(empty_context);
 
@@ -228,14 +231,22 @@ impl Hocuspocus {
             }
         }
 
-        // Check if currently loading
-        {
+        // Check if currently loading - await the same future
+        let existing_lock = {
             let loading = self.loading_documents.read().await;
-            if let Some(lock) = loading.get(document_name) {
-                let result = lock.lock().await;
-                if let Some(ref res) = *result {
-                    return res.clone().map_err(|e| e.into());
-                }
+            loading.get(document_name).cloned()
+        };
+
+        if let Some(lock) = existing_lock {
+            let guard = lock.lock().await;
+            if let Some(ref res) = *guard {
+                return res.clone().map_err(|e| e.into());
+            }
+            drop(guard);
+            // If result was None, the load was never completed - check documents again
+            let docs = self.documents.read().await;
+            if let Some(doc) = docs.get(document_name) {
+                return Ok(doc.clone());
             }
         }
 
@@ -243,6 +254,20 @@ impl Hocuspocus {
         let load_lock = Arc::new(tokio::sync::Mutex::new(None));
         {
             let mut loading = self.loading_documents.write().await;
+            // Double-check: another task may have inserted between our read and this write
+            if loading.contains_key(document_name) {
+                let existing = loading.get(document_name).unwrap().clone();
+                drop(loading);
+                let guard = existing.lock().await;
+                if let Some(ref res) = *guard {
+                    return res.clone().map_err(|e| e.into());
+                }
+                let docs = self.documents.read().await;
+                if let Some(doc) = docs.get(document_name) {
+                    return Ok(doc.clone());
+                }
+                return Err("Document load failed concurrently".into());
+            }
             loading.insert(document_name.to_string(), load_lock.clone());
         }
 
@@ -252,6 +277,10 @@ impl Hocuspocus {
 
         match result {
             Ok(doc) => {
+                {
+                    let mut lock_guard = load_lock.lock().await;
+                    *lock_guard = Some(Ok(doc.clone()));
+                }
                 {
                     let mut docs = self.documents.write().await;
                     docs.insert(document_name.to_string(), doc.clone());
@@ -263,6 +292,10 @@ impl Hocuspocus {
                 Ok(doc)
             }
             Err(e) => {
+                {
+                    let mut lock_guard = load_lock.lock().await;
+                    *lock_guard = Some(Err(e.to_string()));
+                }
                 {
                     let mut loading = self.loading_documents.write().await;
                     loading.remove(document_name);
@@ -317,6 +350,7 @@ impl Hocuspocus {
                     Err(e) => {
                         drop(config);
                         self.close_connections(Some(document_name)).await;
+                        self.unload_document(&document).await;
                         return Err(e);
                     }
                 }
@@ -420,7 +454,7 @@ impl Hocuspocus {
         let hp_aw = self.clone();
         let doc_aw = document.clone();
         let doc_name_aw = document_name.to_string();
-        let _awareness_sub = document.awareness.on_update(move |awareness, event, origin| {
+        let awareness_sub = document.awareness.on_update(move |_awareness, event, _origin| {
             let hp = hp_aw.clone();
             let doc = doc_aw.clone();
             let doc_name = doc_name_aw.clone();
@@ -442,6 +476,8 @@ impl Hocuspocus {
                 let _ = hp.hooks_on_awareness_update(&payload).await;
             });
         });
+
+        document.store_awareness_subscription(awareness_sub).await;
 
         Ok(document)
     }

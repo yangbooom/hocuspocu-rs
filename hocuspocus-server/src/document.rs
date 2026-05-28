@@ -21,6 +21,8 @@ pub struct Document {
 
     connections: RwLock<HashMap<String, ConnectionEntry>>,
 
+    awareness_subscription: RwLock<Option<yrs::Subscription>>,
+
     on_update_callback: RwLock<
         Option<Arc<dyn Fn(Arc<Document>, Option<TransactionOrigin>, Vec<u8>) + Send + Sync>>,
     >,
@@ -70,6 +72,7 @@ impl Document {
             direct_connections_count: RwLock::new(0),
             save_mutex: Mutex::new(()),
             connections: RwLock::new(HashMap::new()),
+            awareness_subscription: RwLock::new(None),
             on_update_callback: RwLock::new(None),
             before_broadcast_stateless_callback: RwLock::new(None),
             before_handle_awareness_callback: RwLock::new(None),
@@ -78,6 +81,11 @@ impl Document {
 
     pub fn doc(&self) -> &Doc {
         self.awareness.doc()
+    }
+
+    pub async fn store_awareness_subscription(&self, sub: yrs::Subscription) {
+        let mut s = self.awareness_subscription.write().await;
+        *s = Some(sub);
     }
 
     pub fn is_empty(&self, field_name: &str) -> bool {

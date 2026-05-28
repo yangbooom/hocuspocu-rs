@@ -80,12 +80,10 @@ impl ClientConnection {
             }
         });
 
+        // Store handle directly - Mutex is uncontended at construction time
         {
-            let cc_for_handle = cc.clone();
-            tokio::spawn(async move {
-                let mut ph = cc_for_handle.ping_handle.lock().await;
-                *ph = Some(handle);
-            });
+            let mut ph = cc.ping_handle.try_lock().expect("ping_handle uncontended at construction");
+            *ph = Some(handle);
         }
 
         cc
@@ -343,6 +341,7 @@ impl ClientConnection {
             Ok(doc) => doc,
             Err(e) => {
                 tracing::error!("Failed to create document: {:?}", e);
+                self.cleanup_document_state(raw_key).await;
                 return;
             }
         };

@@ -39,28 +39,35 @@ pub struct Server {
 impl Server {
     pub fn new(configuration: Option<ServerConfiguration>) -> Arc<Self> {
         let config = configuration.unwrap_or_default();
-        let _hocuspocus = Hocuspocus::new(Some(config.config));
-
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-
-        Arc::new(Self {
-            hocuspocus: Hocuspocus::new(None),
-            configuration: RwLock::new(ServerConfiguration::default()),
-            shutdown_tx,
-            shutdown_rx,
-        })
-    }
-
-    pub fn with_config(config: ServerConfiguration) -> Arc<Self> {
         let hocuspocus = Hocuspocus::new(Some(config.config));
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
         Arc::new(Self {
             hocuspocus,
             configuration: RwLock::new(ServerConfiguration {
-                port: 80,
-                address: "0.0.0.0".to_string(),
-                stop_on_signals: true,
+                port: config.port,
+                address: config.address,
+                stop_on_signals: config.stop_on_signals,
+                config: Configuration::default(),
+            }),
+            shutdown_tx,
+            shutdown_rx,
+        })
+    }
+
+    pub fn with_config(config: ServerConfiguration) -> Arc<Self> {
+        let port = config.port;
+        let address = config.address.clone();
+        let stop_on_signals = config.stop_on_signals;
+        let hocuspocus = Hocuspocus::new(Some(config.config));
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+        Arc::new(Self {
+            hocuspocus,
+            configuration: RwLock::new(ServerConfiguration {
+                port,
+                address,
+                stop_on_signals,
                 config: Configuration::default(),
             }),
             shutdown_tx,
@@ -78,12 +85,6 @@ impl Server {
         };
 
         let listener = TcpListener::bind(&addr).await?;
-
-        let config = self.configuration.read().await;
-        if !config.config.quiet {
-            self.show_start_screen(actual_port).await;
-        }
-        drop(config);
 
         let on_listen_payload = OnListenPayload {
             port: actual_port,
@@ -132,9 +133,11 @@ impl Server {
         let (write, mut read) = ws_stream.split();
         let write = Arc::new(tokio::sync::Mutex::new(write));
 
+        let state = Arc::new(std::sync::RwLock::new(WsReadyState::Open));
+
         let ws_sink = Arc::new(TungsteniteWebSocketSink {
             sender: write.clone(),
-            state: Arc::new(RwLock::new(WsReadyState::Open)),
+            state: state.clone(),
         });
 
         let request = RequestInfo::default();
@@ -158,9 +161,7 @@ impl Server {
                     client_connection.handle_close(event).await;
                     break;
                 }
-                Ok(Message::Ping(_)) => {
-                    // tungstenite handles pong automatically
-                }
+                Ok(Message::Ping(_)) => {}
                 Err(e) => {
                     tracing::error!("WebSocket error: {:?}", e);
                     client_connection
@@ -172,8 +173,8 @@ impl Server {
             }
         }
 
-        let mut state = ws_sink.state.write().await;
-        *state = WsReadyState::Closed;
+        let mut s = state.write().unwrap();
+        *s = WsReadyState::Closed;
     }
 
     pub async fn destroy(self: &Arc<Self>) {
@@ -190,7 +191,6 @@ impl Server {
         self.hocuspocus.close_connections(None).await;
         self.hocuspocus.flush_pending_stores().await;
 
-        // Wait for documents to unload
         let mut attempts = 0;
         while self.hocuspocus.get_documents_count().await > 0 && attempts < 100 {
             tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
@@ -215,42 +215,6 @@ impl Server {
     pub async fn http_url(&self) -> String {
         format!("http://{}", self.url().await)
     }
-
-    async fn show_start_screen(&self, port: u16) {
-        let config = self.configuration.read().await;
-        let name = config
-            .config
-            .name
-            .as_ref()
-            .map(|n| format!(" ({})", n))
-            .unwrap_or_default();
-
-        println!();
-        println!("  Hocuspocus v{}{} running at:", VERSION, name);
-        println!();
-        println!("  > HTTP: http://{}:{}", config.address, port);
-        println!("  > WebSocket: ws://{}:{}", config.address, port);
-
-        let extensions: Vec<String> = config
-            .config
-            .extensions
-            .iter()
-            .map(|ext| ext.name().to_string())
-            .filter(|n| n != "Extension")
-            .collect();
-
-        if !extensions.is_empty() {
-            println!();
-            println!("  Extensions:");
-            for name in &extensions {
-                println!("  - {}", name);
-            }
-        }
-
-        println!();
-        println!("  Ready.");
-        println!();
-    }
 }
 
 struct TungsteniteWebSocketSink {
@@ -262,7 +226,7 @@ struct TungsteniteWebSocketSink {
             >,
         >,
     >,
-    state: Arc<RwLock<WsReadyState>>,
+    state: Arc<std::sync::RwLock<WsReadyState>>,
 }
 
 impl WebSocketSink for TungsteniteWebSocketSink {
@@ -270,7 +234,7 @@ impl WebSocketSink for TungsteniteWebSocketSink {
         let sender = self.sender.clone();
         let state = self.state.clone();
         tokio::spawn(async move {
-            let current_state = *state.read().await;
+            let current_state = *state.read().unwrap();
             if current_state == WsReadyState::Closing || current_state == WsReadyState::Closed {
                 return;
             }
@@ -288,9 +252,11 @@ impl WebSocketSink for TungsteniteWebSocketSink {
         let sender = self.sender.clone();
         let state = self.state.clone();
         let reason = reason.to_string();
-        tokio::spawn(async move {
-            let mut s = state.write().await;
+        {
+            let mut s = state.write().unwrap();
             *s = WsReadyState::Closing;
+        }
+        tokio::spawn(async move {
             let mut sender = sender.lock().await;
             let close_frame = tokio_tungstenite::tungstenite::protocol::CloseFrame {
                 code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::from(
@@ -300,17 +266,13 @@ impl WebSocketSink for TungsteniteWebSocketSink {
             };
             let _ = sender.send(Message::Close(Some(close_frame))).await;
             drop(sender);
-            let mut s = state.write().await;
+            let mut s = state.write().unwrap();
             *s = WsReadyState::Closed;
         });
         Ok(())
     }
 
     fn ready_state(&self) -> WsReadyState {
-        // Synchronous access - use try_read
-        match self.state.try_read() {
-            Ok(state) => *state,
-            Err(_) => WsReadyState::Open,
-        }
+        *self.state.read().unwrap()
     }
 }
