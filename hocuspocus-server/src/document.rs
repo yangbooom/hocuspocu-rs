@@ -22,6 +22,7 @@ pub struct Document {
     connections: RwLock<HashMap<String, ConnectionEntry>>,
 
     awareness_subscription: RwLock<Option<yrs::Subscription>>,
+    update_subscription: RwLock<Option<yrs::Subscription>>,
 
     on_update_callback: RwLock<
         Option<Arc<dyn Fn(Arc<Document>, Option<TransactionOrigin>, Vec<u8>) + Send + Sync>>,
@@ -73,6 +74,7 @@ impl Document {
             save_mutex: Mutex::new(()),
             connections: RwLock::new(HashMap::new()),
             awareness_subscription: RwLock::new(None),
+            update_subscription: RwLock::new(None),
             on_update_callback: RwLock::new(None),
             before_broadcast_stateless_callback: RwLock::new(None),
             before_handle_awareness_callback: RwLock::new(None),
@@ -88,11 +90,19 @@ impl Document {
         *s = Some(sub);
     }
 
-    pub fn is_empty(&self, field_name: &str) -> bool {
+    pub async fn store_update_subscription(&self, sub: yrs::Subscription) {
+        let mut s = self.update_subscription.write().await;
+        *s = Some(sub);
+    }
+
+    /// Checks if the document has had no mutations.
+    /// In TS, isEmpty(fieldName) checks if a specific field has no content. yrs does not
+    /// expose the internal `_start` and `_map.size` of a shared type, so this matches TS
+    /// semantics at the document level: returns true when the doc's state vector is empty
+    /// (no client has made any changes yet).
+    pub fn is_empty(&self, _field_name: &str) -> bool {
         let txn = self.doc().transact();
-        txn.get_map(field_name).is_none() && txn.get_text(field_name).is_none()
-            && txn.get_array(field_name).is_none()
-            && txn.get_xml_fragment(field_name).is_none()
+        txn.state_vector().is_empty()
     }
 
     pub fn merge(&self, documents: &[&Doc]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

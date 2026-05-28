@@ -184,8 +184,30 @@ impl MessageReceiver {
             }
             MESSAGE_YJS_SYNC_STEP2 | MESSAGE_YJS_UPDATE => {
                 if read_only {
-                    let _update_data = decoder.read_var_uint8_array()?;
-                    let ack_msg = OutgoingMessage::new(message_address).write_sync_status(false);
+                    let update_data = decoder.read_var_uint8_array()?;
+                    // Check whether the update actually contains novel data.
+                    // If the update's state vector is fully covered by the doc's current
+                    // state vector, this is a no-op and we ack positively (matches TS
+                    // Y.snapshotContainsUpdate behavior).
+                    let contains_new = match yrs::encode_state_vector_from_update_v1(&update_data) {
+                        Ok(update_sv_bytes) => {
+                            match yrs::StateVector::decode_v1(&update_sv_bytes) {
+                                Ok(update_sv) => {
+                                    let doc_sv = {
+                                        let txn = document.doc().transact();
+                                        txn.state_vector()
+                                    };
+                                    update_sv.iter().any(|(client, clock)| {
+                                        *clock > doc_sv.get(client)
+                                    })
+                                }
+                                Err(_) => true, // assume novel on decode failure
+                            }
+                        }
+                        Err(_) => true,
+                    };
+                    let ack_msg = OutgoingMessage::new(message_address)
+                        .write_sync_status(!contains_new);
                     if let Some(conn_id) = connection_id {
                         document.send_to_connection(conn_id, &ack_msg.to_vec()).await;
                     }
@@ -199,14 +221,14 @@ impl MessageReceiver {
                     })
                 });
 
+                // apply_update triggers observe_update_v1 which handles
+                // broadcasting to connections and firing onChange/onStoreDocument hooks
                 document.apply_update(&update_data)?;
 
                 if let Some(conn_id) = connection_id {
                     let ack = OutgoingMessage::new(message_address).write_sync_status(true);
                     document.send_to_connection(conn_id, &ack.to_vec()).await;
                 }
-
-                document.handle_update(update_data, origin).await;
             }
             _ => {
                 return Err(format!("Received a sync message with an unknown type: {}", sync_type).into());

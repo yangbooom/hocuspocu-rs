@@ -362,15 +362,16 @@ impl Hocuspocus {
             *is_loading = false;
         }
 
-        // Set up update handler
-        let hp = self.clone();
-        let _doc_ref = document.clone();
-        document
-            .set_on_update(Arc::new(move |doc, origin, update| {
-                let hp = hp.clone();
-                let doc = doc.clone();
-                let update = update.clone();
-                let origin = origin.clone();
+        // Set up Yrs Doc-level update observer
+        // This fires for ALL mutations: wire protocol, DirectConnection.transact, etc.
+        let hp_update = self.clone();
+        let doc_update = document.clone();
+        let update_sub = document
+            .doc()
+            .observe_update_v1(move |_txn, event| {
+                let hp = hp_update.clone();
+                let doc = doc_update.clone();
+                let update = event.update.clone();
                 tokio::spawn(async move {
                     let mut ts = doc.last_change_time.write().await;
                     *ts = std::time::SystemTime::now()
@@ -378,10 +379,13 @@ impl Hocuspocus {
                         .unwrap_or_default()
                         .as_millis() as u64;
                     drop(ts);
-                    hp.handle_document_update(&doc, origin, update).await;
+
+                    doc.handle_update(update.clone(), None).await;
+                    hp.handle_document_update(&doc, None, update).await;
                 });
-            }))
-            .await;
+            })
+            .expect("observe_update_v1 should succeed");
+        document.store_update_subscription(update_sub).await;
 
         // afterLoadDocument hook
         let after_load_payload = AfterLoadDocumentPayload {

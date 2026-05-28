@@ -374,19 +374,28 @@ impl ClientConnection {
             hook_payload.provider_version.clone(),
         );
 
-        // Set up close callback
+        // Set up close callback - use Weak to break the Arc cycle:
+        // ClientConnection -> document_connections -> Connection -> on_close_callbacks -> closure
         let hocuspocus = self.hocuspocus.clone();
         let raw_key_owned = raw_key.to_string();
-        let self_ref = self.clone();
-        let conn_ref = connection.clone();
+        let self_weak = Arc::downgrade(self);
+        let conn_weak = Arc::downgrade(&connection);
         connection
             .on_close(Arc::new(move |doc, _event| {
                 let hp = hocuspocus.clone();
                 let rk = raw_key_owned.clone();
-                let sr = self_ref.clone();
-                let cr = conn_ref.clone();
+                let sw = self_weak.clone();
+                let cw = conn_weak.clone();
 
                 tokio::spawn(async move {
+                    let cr = match cw.upgrade() {
+                        Some(c) => c,
+                        None => return,
+                    };
+                    let sr = match sw.upgrade() {
+                        Some(s) => s,
+                        None => return,
+                    };
                     cr.wait_for_pending_messages().await;
 
                     let ctx = cr.context.read().await;
@@ -431,14 +440,14 @@ impl ClientConnection {
         let hp_clone = self.hocuspocus.clone();
         let hook_payload_clone = hook_payload.clone();
         let doc_clone = document.clone();
-        let conn_clone = connection.clone();
+        let conn_id_for_token = connection.id.clone();
         let doc_name = document_name.to_string();
         connection
             .set_token_sync_callback(Arc::new(move |token: String| {
                 let hp = hp_clone.clone();
                 let hp2 = hook_payload_clone.clone();
                 let dc = doc_clone.clone();
-                let cc = conn_clone.clone();
+                let cid = conn_id_for_token.clone();
                 let dn = doc_name.clone();
                 Box::pin(async move {
                     let payload = OnTokenSyncPayload {
@@ -449,7 +458,7 @@ impl ClientConnection {
                         socket_id: hp2.socket_id.clone(),
                         token,
                         connection_config: hp2.connection_config.clone(),
-                        connection_id: cc.id.clone(),
+                        connection_id: cid,
                     };
                     hp.hooks_on_token_sync(&payload).await.map(|_| ())
                 })
