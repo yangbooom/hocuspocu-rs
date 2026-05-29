@@ -77,6 +77,10 @@ impl Server {
         })
     }
 
+    // The accept_hdr_async callback must return `Result<Response, ErrorResponse>`,
+    // and `ErrorResponse` (http::Response<Option<String>>) is a large Err variant
+    // we don't control — the signature is dictated by tungstenite's Callback trait.
+    #[allow(clippy::result_large_err)]
     pub async fn listen(
         self: &Arc<Self>,
         port: Option<u16>,
