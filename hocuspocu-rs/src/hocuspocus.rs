@@ -24,15 +24,13 @@ pub struct Hocuspocus {
 impl Hocuspocus {
     pub fn new(configuration: Option<Configuration>) -> Arc<Self> {
         let config = configuration.unwrap_or_default();
-        let instance = Arc::new(Self {
+        Arc::new(Self {
             configuration: RwLock::new(config),
             documents: RwLock::new(HashMap::new()),
             loading_documents: RwLock::new(HashMap::new()),
             unloading_documents: RwLock::new(HashMap::new()),
             debouncer: Debouncer::new(),
-        });
-
-        instance
+        })
     }
 
     pub async fn configure(self: &Arc<Self>, configuration: Configuration) {
@@ -123,40 +121,38 @@ impl Hocuspocus {
 
         let ctx = default_context.unwrap_or_else(empty_context);
 
-        let client_connection = ClientConnection::new(
-            websocket,
-            request,
-            self.clone(),
-            timeout,
-            ctx,
-        );
+        let client_connection =
+            ClientConnection::new(websocket, request, self.clone(), timeout, ctx);
 
         let hp = self.clone();
         let cc = client_connection.clone();
         tokio::spawn(async move {
-            cc.on_close(Arc::new(move |document: Arc<Document>, _payload: OnDisconnectPayload| {
-                let hp = hp.clone();
-                let doc = document.clone();
-                tokio::spawn(async move {
-                    if doc.get_connections_count().await > 0 {
-                        return;
-                    }
-
-                    let debounce_id = format!("onStoreDocument-{}", doc.name);
-                    let is_loading = *doc.is_loading.read().await;
-                    let is_debounced = hp.debouncer.is_debounced(&debounce_id).await;
-
-                    if !is_loading && is_debounced {
-                        let config = hp.configuration.read().await;
-                        if config.unload_immediately {
-                            drop(config);
-                            hp.debouncer.execute_now(&debounce_id).await;
+            cc.on_close(Arc::new(
+                move |document: Arc<Document>, _payload: OnDisconnectPayload| {
+                    let hp = hp.clone();
+                    let doc = document.clone();
+                    tokio::spawn(async move {
+                        if doc.get_connections_count().await > 0 {
+                            return;
                         }
-                    } else {
-                        hp.unload_document(&doc).await;
-                    }
-                });
-            })).await;
+
+                        let debounce_id = format!("onStoreDocument-{}", doc.name);
+                        let is_loading = *doc.is_loading.read().await;
+                        let is_debounced = hp.debouncer.is_debounced(&debounce_id).await;
+
+                        if !is_loading && is_debounced {
+                            let config = hp.configuration.read().await;
+                            if config.unload_immediately {
+                                drop(config);
+                                hp.debouncer.execute_now(&debounce_id).await;
+                            }
+                        } else {
+                            hp.unload_document(&doc).await;
+                        }
+                    });
+                },
+            ))
+            .await;
         });
 
         client_connection
@@ -175,9 +171,7 @@ impl Hocuspocus {
 
         let context = match &origin {
             Some(TransactionOrigin::Connection(_)) => empty_context(),
-            Some(TransactionOrigin::Local(l)) => {
-                l.context.clone().unwrap_or_else(empty_context)
-            }
+            Some(TransactionOrigin::Local(l)) => l.context.clone().unwrap_or_else(empty_context),
             _ => empty_context(),
         };
 
@@ -272,7 +266,13 @@ impl Hocuspocus {
         }
 
         let result = self
-            .load_document(document_name, request, socket_id, connection_config, context)
+            .load_document(
+                document_name,
+                request,
+                socket_id,
+                connection_config,
+                context,
+            )
             .await;
 
         match result {
@@ -420,18 +420,14 @@ impl Hocuspocus {
         let hp_bha = self.clone();
         document
             .set_before_handle_awareness(Arc::new(
-                move |doc,
-                      update_data: Vec<u8>,
-                      origin: Option<TransactionOrigin>| {
+                move |doc, update_data: Vec<u8>, origin: Option<TransactionOrigin>| {
                     let hp = hp_bha.clone();
                     let doc = doc.clone();
                     let update_data = update_data.clone();
                     let origin = origin.clone();
                     Box::pin(async move {
                         let connection_id = match &origin {
-                            Some(TransactionOrigin::Connection(c)) => {
-                                Some(c.connection_id.clone())
-                            }
+                            Some(TransactionOrigin::Connection(c)) => Some(c.connection_id.clone()),
                             _ => None,
                         };
 
@@ -458,28 +454,30 @@ impl Hocuspocus {
         let hp_aw = self.clone();
         let doc_aw = document.clone();
         let doc_name_aw = document_name.to_string();
-        let awareness_sub = document.awareness.on_update(move |_awareness, event, _origin| {
-            let hp = hp_aw.clone();
-            let doc = doc_aw.clone();
-            let doc_name = doc_name_aw.clone();
-            let added = event.added().to_vec();
-            let updated = event.updated().to_vec();
-            let removed = event.removed().to_vec();
-            let connection_id = None; // origin handling simplified
+        let awareness_sub = document
+            .awareness
+            .on_update(move |_awareness, event, _origin| {
+                let hp = hp_aw.clone();
+                let doc = doc_aw.clone();
+                let doc_name = doc_name_aw.clone();
+                let added = event.added().to_vec();
+                let updated = event.updated().to_vec();
+                let removed = event.removed().to_vec();
+                let connection_id = None; // origin handling simplified
 
-            tokio::spawn(async move {
-                let payload = OnAwarenessUpdatePayload {
-                    document: doc.clone(),
-                    document_name: doc_name,
-                    transaction_origin: None,
-                    connection_id,
-                    added,
-                    updated,
-                    removed,
-                };
-                let _ = hp.hooks_on_awareness_update(&payload).await;
+                tokio::spawn(async move {
+                    let payload = OnAwarenessUpdatePayload {
+                        document: doc.clone(),
+                        document_name: doc_name,
+                        transaction_origin: None,
+                        connection_id,
+                        added,
+                        updated,
+                        removed,
+                    };
+                    let _ = hp.hooks_on_awareness_update(&payload).await;
+                });
             });
-        });
 
         document.store_awareness_subscription(awareness_sub).await;
 
@@ -600,7 +598,11 @@ impl Hocuspocus {
             document: document.clone(),
         };
 
-        if let Err(_) = self.hooks_before_unload_document(&before_payload).await {
+        if self
+            .hooks_before_unload_document(&before_payload)
+            .await
+            .is_err()
+        {
             let mut unloading = self.unloading_documents.write().await;
             unloading.remove(document_name);
             return;
@@ -655,10 +657,7 @@ impl Hocuspocus {
 
     // ──── Hook Runners ────
 
-    pub async fn hooks_on_configure(
-        &self,
-        payload: &OnConfigurePayload,
-    ) -> HookResult {
+    pub async fn hooks_on_configure(&self, payload: &OnConfigurePayload) -> HookResult {
         let config = self.configuration.read().await;
         for ext in &config.extensions {
             ext.on_configure(payload).await?;
@@ -726,10 +725,7 @@ impl Hocuspocus {
         Ok(ctx)
     }
 
-    pub async fn hooks_on_create_document(
-        &self,
-        payload: &OnCreateDocumentPayload,
-    ) -> HookResult {
+    pub async fn hooks_on_create_document(&self, payload: &OnCreateDocumentPayload) -> HookResult {
         let config = self.configuration.read().await;
         for ext in &config.extensions {
             ext.on_create_document(payload).await?;
@@ -820,10 +816,7 @@ impl Hocuspocus {
         Ok(None)
     }
 
-    pub async fn hooks_on_store_document(
-        &self,
-        payload: &OnStoreDocumentPayload,
-    ) -> HookResult {
+    pub async fn hooks_on_store_document(&self, payload: &OnStoreDocumentPayload) -> HookResult {
         let config = self.configuration.read().await;
         for ext in &config.extensions {
             ext.on_store_document(payload).await?;

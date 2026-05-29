@@ -49,19 +49,10 @@ pub struct AwarenessUpdate {
     pub removed: Vec<u64>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ConnectionConfiguration {
     pub read_only: bool,
     pub is_authenticated: bool,
-}
-
-impl Default for ConnectionConfiguration {
-    fn default() -> Self {
-        Self {
-            read_only: false,
-            is_authenticated: false,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -76,19 +67,10 @@ pub struct ConnectionTransactionOrigin {
     pub connection_id: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct LocalTransactionOrigin {
     pub skip_store_hooks: bool,
     pub context: Option<Arc<dyn Any + Send + Sync>>,
-}
-
-impl Default for LocalTransactionOrigin {
-    fn default() -> Self {
-        Self {
-            skip_store_hooks: false,
-            context: None,
-        }
-    }
 }
 
 pub fn is_transaction_origin(origin: &Option<TransactionOrigin>) -> bool {
@@ -470,10 +452,7 @@ pub trait Extension: Send + Sync {
         Ok(None)
     }
 
-    async fn before_unload_document(
-        &self,
-        _payload: &BeforeUnloadDocumentPayload,
-    ) -> HookResult {
+    async fn before_unload_document(&self, _payload: &BeforeUnloadDocumentPayload) -> HookResult {
         Ok(None)
     }
 
@@ -491,7 +470,11 @@ pub trait Extension: Send + Sync {
 #[async_trait]
 pub trait WebSocketSink: Send + Sync {
     fn send(&self, data: Vec<u8>) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
-    fn close(&self, code: u16, reason: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    fn close(
+        &self,
+        code: u16,
+        reason: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
     fn ready_state(&self) -> hocuspocus_common::WsReadyState;
 }
 

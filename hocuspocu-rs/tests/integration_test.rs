@@ -1,4 +1,4 @@
-use hocuspocus_server::*;
+use hocuspocu_rs::*;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use yrs::{GetString, Text, Transact};
@@ -23,10 +23,7 @@ async fn test_direct_connection_triggers_update_observer() {
 async fn test_yrs_doc_observer_fires_on_direct_mutation() {
     let hp = Hocuspocus::new(None);
 
-    let direct = hp
-        .open_direct_connection("doc1", None)
-        .await
-        .expect("open");
+    let direct = hp.open_direct_connection("doc1", None).await.expect("open");
 
     let doc = direct.document().expect("doc").clone();
 
