@@ -1,14 +1,16 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 
 use futures_util::{SinkExt, StreamExt};
+use tokio_tungstenite::accept_hdr_async;
+use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::protocol::Message;
-use tokio_tungstenite::accept_async;
 
 use hocuspocus_common::WsReadyState;
 
-use crate::hocuspocus::{Hocuspocus, VERSION};
+use crate::hocuspocus::Hocuspocus;
 use crate::types::*;
 
 pub struct ServerConfiguration {
@@ -75,7 +77,10 @@ impl Server {
         })
     }
 
-    pub async fn listen(self: &Arc<Self>, port: Option<u16>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn listen(
+        self: &Arc<Self>,
+        port: Option<u16>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let (addr, actual_port) = {
             let mut config = self.configuration.write().await;
             if let Some(p) = port {
@@ -86,9 +91,7 @@ impl Server {
 
         let listener = TcpListener::bind(&addr).await?;
 
-        let on_listen_payload = OnListenPayload {
-            port: actual_port,
-        };
+        let on_listen_payload = OnListenPayload { port: actual_port };
         let _ = self.hocuspocus.hooks_on_listen(&on_listen_payload).await;
 
         let mut shutdown_rx = self.shutdown_rx.clone();
@@ -101,7 +104,30 @@ impl Server {
                         Ok((stream, _addr)) => {
                             let server = server.clone();
                             tokio::spawn(async move {
-                                let ws_stream = match accept_async(stream).await {
+                                // Capture the upgrade request's URL + headers during the
+                                // handshake so they reach connection hooks (matches TS
+                                // getParameters / requestHeaders behavior).
+                                let captured: Arc<std::sync::Mutex<(String, HashMap<String, String>)>> =
+                                    Arc::new(std::sync::Mutex::new((String::new(), HashMap::new())));
+                                let cap = captured.clone();
+                                let ws_stream = match accept_hdr_async(
+                                    stream,
+                                    move |req: &Request, resp: Response| -> Result<Response, ErrorResponse> {
+                                        let url = req.uri().to_string();
+                                        let mut headers = HashMap::new();
+                                        for (k, v) in req.headers().iter() {
+                                            if let Ok(val) = v.to_str() {
+                                                headers.insert(k.as_str().to_lowercase(), val.to_string());
+                                            }
+                                        }
+                                        if let Ok(mut g) = cap.lock() {
+                                            *g = (url, headers);
+                                        }
+                                        Ok(resp)
+                                    },
+                                )
+                                .await
+                                {
                                     Ok(ws) => ws,
                                     Err(e) => {
                                         tracing::error!("WebSocket handshake failed: {:?}", e);
@@ -109,7 +135,14 @@ impl Server {
                                     }
                                 };
 
-                                server.handle_websocket(ws_stream).await;
+                                let (url, headers) = captured
+                                    .lock()
+                                    .map(|g| g.clone())
+                                    .unwrap_or_default();
+                                let parameters = crate::types::get_parameters(&url);
+                                let request = RequestInfo { headers, parameters, url };
+
+                                server.handle_websocket(ws_stream, request).await;
                             });
                         }
                         Err(e) => {
@@ -129,6 +162,7 @@ impl Server {
     async fn handle_websocket(
         self: &Arc<Self>,
         ws_stream: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+        request: RequestInfo,
     ) {
         let (write, mut read) = ws_stream.split();
         let write = Arc::new(tokio::sync::Mutex::new(write));
@@ -140,13 +174,9 @@ impl Server {
             state: state.clone(),
         });
 
-        let request = RequestInfo::default();
-
-        let client_connection = self.hocuspocus.handle_connection(
-            ws_sink.clone(),
-            request,
-            None,
-        );
+        let client_connection = self
+            .hocuspocus
+            .handle_connection(ws_sink.clone(), request, None);
 
         while let Some(msg) = read.next().await {
             match msg {
@@ -181,10 +211,7 @@ impl Server {
         let _ = self.shutdown_tx.send(true);
 
         if self.hocuspocus.get_documents_count().await == 0 {
-            let _ = self
-                .hocuspocus
-                .hooks_on_destroy(&OnDestroyPayload {})
-                .await;
+            let _ = self.hocuspocus.hooks_on_destroy(&OnDestroyPayload {}).await;
             return;
         }
 
@@ -197,10 +224,7 @@ impl Server {
             attempts += 1;
         }
 
-        let _ = self
-            .hocuspocus
-            .hooks_on_destroy(&OnDestroyPayload {})
-            .await;
+        let _ = self.hocuspocus.hooks_on_destroy(&OnDestroyPayload {}).await;
     }
 
     pub async fn url(&self) -> String {
