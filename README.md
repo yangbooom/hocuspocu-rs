@@ -15,20 +15,25 @@ implementation.
 ## Why a Rust port?
 
 The standout difference is memory. Driving identical workloads with the real
-`@hocuspocus/provider` client on the same machine:
+`@hocuspocus/provider` client head-to-head against `@hocuspocus/server` 4.1.0 on
+the same machine ([`interop/stress.sh`](interop/)):
 
 | | hocuspocu-rs | @hocuspocus/server 4.1.0 |
 |---|---|---|
 | Idle RSS | **~2.4 MB** | ~62 MB |
-| RSS, 200 connections | **~38 MB** | ~112 MB |
-| Fan-out latency, 100 receivers — p50 | ~1.1 ms | ~1.2 ms |
-| Fan-out latency, 100 receivers — worst-case | **~8 ms** | ~14–26 ms |
+| RSS, 1000 connections (100 docs) | **~42 MB** | ~125 MB |
+| RSS, 20 s throughput soak (peak) | **~46 MB** | ~152 MB |
+| Sustained throughput (routed ops/s) | ~2.1k | ~2.0k |
+| Fan-out latency, 200 receivers — p50 | ~3.9 ms | **~2.0 ms** |
+| Fan-out latency, 200 receivers — p99 | ~15 ms | **~9 ms** |
 
-Memory is ~26× lower at idle and ~3× lower under load. Broadcast latency is
-comparable at the median, with a tighter tail — no GC pauses means fewer
-outliers. Raw message throughput is similar and is bottlenecked by the client
-in this harness, so it isn't a meaningful differentiator. Reproduce everything
-with [`interop/run_bench.sh`](interop/).
+Memory is the decisive win — **~26× lower at idle and ~3× lower under load**, with
+no GC pauses. Sustained throughput is on par. Broadcast latency is low single-digit
+milliseconds but higher than the JS server at the median: hocuspocu-rs writes to
+each client from a per-connection async task, where Node broadcasts in one inline
+synchronous loop. Reach for this port when memory footprint and a small, predictable
+process matter; the JS server still has the edge on raw fan-out latency. Reproduce
+everything with [`interop/stress.sh`](interop/).
 
 ## Install
 

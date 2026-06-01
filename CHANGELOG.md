@@ -3,6 +3,19 @@
 All notable changes to this project are documented here. The version tracks the
 upstream `@hocuspocus/server` npm version it targets.
 
+## [Unreleased]
+
+### Changed
+- Cap per-connection WebSocket buffers at 16 KiB (tungstenite defaults to a 128 KiB
+  read buffer per socket). Per-connection memory drops ~148 KiB → ~39 KiB, so the
+  server now uses ~3× less memory than `@hocuspocus/server` 4.1.0 under load (and
+  ~26× at idle) instead of more. Message-size limits are unchanged (64 MiB), so
+  large initial syncs are unaffected.
+- Replace the per-message `tokio::spawn` + `Mutex` WebSocket sink with one ordered
+  writer task per connection (mpsc channel). This guarantees per-client frame
+  ordering and lifts sustained throughput ~1790 → ~2090 routed ops/s, on par with
+  the JS server.
+
 ## [4.1.0] - 2026-05-29
 
 Initial public release: a Rust port of Hocuspocus, wire-compatible with
