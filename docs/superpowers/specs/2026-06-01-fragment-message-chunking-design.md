@@ -39,8 +39,8 @@ TypeScript provider into this repository so the protocol is defined and tested i
 - Bidirectional application-level fragmentation in hocuspocu-rs (server splits large
   outbound messages; server reassembles fragmented inbound messages).
 - **Opt-in:** off by default; identical to upstream behavior unless a chunk size is set.
-- Outbound chunking configured **per-connection via a hook** (mirrors the fork's
-  `connectionConfig.messageChunkSize`).
+- Outbound chunking configured via a **global `Configuration.message_chunk_size`** (default
+  `0` = off), applied to all connections.
 - A matching TypeScript provider in-repo, byte-compatible with the Rust server.
 
 ## Non-goals
@@ -49,8 +49,11 @@ TypeScript provider into this repository so the protocol is defined and tested i
   stay *defined* for upstream compatibility but remain unused, as today).
 - A compile-time cargo feature gate — fragmentation is always compiled in and gated at
   runtime (see "Feature gating").
-- A global `Configuration`-level default chunk size — per-connection via hook only (a
-  global default can be added trivially later if it is ever wanted).
+- A per-connection chunk-size override via hook — out of scope. The current code has **no
+  working hook path to mutate `connection_config`** (`on_authenticate`/`on_connect` take an
+  immutable `&payload`, and `read_only` is in fact never set anywhere). Wiring a mutable-hook
+  path — which would also fix the latent unset `read_only` — is deferred. Chunk size is
+  configured globally for now.
 - Publishing the TS provider to npm (in-repo source-of-truth + interop client, for now).
 - Changing how the existing (already deployed) walla clients talk to the *old* JS server.
 
@@ -111,20 +114,21 @@ that broke above ~64 KB). This will be documented for operators.
 
 ## Configuration
 
-Add to `ConnectionConfiguration` (`hocuspocu-rs/src/types.rs`):
+Add to `Configuration` (`hocuspocu-rs/src/types.rs`), defaulting to `0`:
 
 ```rust
-pub struct ConnectionConfiguration {
-    pub read_only: bool,
-    pub is_authenticated: bool,
+pub struct Configuration {
+    // …existing fields…
     pub message_chunk_size: usize, // 0 = disabled (default)
 }
 ```
 
-Set from a hook (e.g. `on_authenticate`) by mutating
-`connection_config.message_chunk_size`, mirroring the fork. `setup_new_connection`
-(`client_connection.rs`) reads it and uses it **only to gate outbound chunking** (the sink
-wrapper, below). No global `Configuration` default — per-connection via hook only.
+`configure()` (`hocuspocus.rs`) copies it alongside the other fields. `setup_new_connection`
+(`client_connection.rs`) reads
+`self.hocuspocus.configuration.read().await.message_chunk_size` and uses it **only to gate
+outbound chunking** (the sink wrapper, below): when `> 0` the connection's sink is wrapped,
+otherwise it is left raw. It applies uniformly to all connections (which is exactly walla's
+usage — one chunk size for everyone). `ConnectionConfiguration` is **not** changed.
 
 > **Inbound reassembly is unconditional.** `message_chunk_size` does *not* gate inbound.
 > Whether the *client* fragments is decided by the client's own chunk size, so the server
@@ -272,21 +276,24 @@ state). No dual-accept (`10/11/12`) transition code in the server — it would r
 
 | File | Change |
 | --- | --- |
-| `hocuspocu-rs/src/types.rs` | add `FragmentStart=100/FragmentData=101/FragmentEnd=102` to `MessageType` + `TryFrom`; add `message_chunk_size` to `ConnectionConfiguration`. |
-| `hocuspocu-rs/src/outgoing_message.rs` | fragment-frame builders. |
-| `hocuspocu-rs/src/connection.rs` | `ChunkingSink` (new sink wrapper); `fragment_buffers` field + inbound `100/101/102` handling in `process_messages`. `Connection::send` / `Connection::new` signatures unchanged. |
-| `hocuspocu-rs/src/client_connection.rs` | in `setup_new_connection`, wrap sink when `message_chunk_size > 0`; pass wrapped sink to `add_connection` + `Connection::new`. |
-| `hocuspocu-rs/src/lib.rs` | re-export any new public types. |
+| `hocuspocu-rs/src/types.rs` | add `FragmentStart=100/FragmentData=101/FragmentEnd=102` to `MessageType` + `TryFrom`; add `message_chunk_size` to `Configuration` + its `Default`. |
+| `hocuspocu-rs/src/outgoing_message.rs` | fragment-frame builders (`write_fragment_start/data/end`). |
+| `hocuspocu-rs/src/fragment.rs` | **new module:** `FragmentBuffer` (inbound reassembly) + `ChunkingSink` (outbound sink wrapper). |
+| `hocuspocu-rs/src/connection.rs` | `fragment_buffers` field + inbound `100/101/102` handling in `process_messages`. `Connection::send` / `Connection::new` signatures unchanged. |
+| `hocuspocu-rs/src/hocuspocus.rs` | `configure()` copies `message_chunk_size`. |
+| `hocuspocu-rs/src/client_connection.rs` | in `setup_new_connection`, read global `message_chunk_size`; wrap sink when `> 0`; pass wrapped sink to `add_connection` + `Connection::new`. |
+| `hocuspocu-rs/src/lib.rs` | `pub mod fragment;` + re-export `FragmentBuffer`, `ChunkingSink`. |
+| `hocuspocu-rs/examples/server.rs` | `HP_CHUNK` env → `Configuration.message_chunk_size` (used by the interop test). |
 | `hocuspocu-rs/tests/wire_protocol_test.rs` | fragment unit tests. |
 | `provider/**` | new — cloned TS provider as a standalone package, renumbered. |
 | `interop/**` | fragmentation interop test (tsx) using the new provider. |
 | `CLAUDE.md` | document the fragment types, runtime opt-in, inbound-unconditional, migration note. |
-| `examples/server.rs` (optional) | demonstrate enabling `message_chunk_size` via a hook. |
+| `interop/package.json` | add `tsx` (+ provider's runtime deps reachable) to run the TS test. |
 
 ## Resolved decisions
 
 - Direction: **bidirectional**.
-- Config: **per-connection via hook** (`message_chunk_size`, default `0` = off); **no global default**.
+- Config: **global `Configuration.message_chunk_size`** (default `0` = off), applied to all connections. Per-connection hook override deferred — there is no working hook path to mutate `connection_config` today (and `read_only` is itself unset; fixing that is out of scope).
 - **Inbound reassembly is unconditional**; `message_chunk_size` gates **outbound only**.
 - Numbers: **100/101/102**; keep `Ping=9`/`Pong=10`.
 - `message_chunk_size` = **payload slice size** (fork parity); set with margin below the network limit.
