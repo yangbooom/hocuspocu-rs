@@ -5,6 +5,18 @@ upstream `@hocuspocus/server` npm version it targets.
 
 ## [Unreleased]
 
+## [4.2.0] - 2026-06-01
+
+### Added
+- Opt-in application-level message fragmentation for networks that drop large
+  WebSocket messages. `Configuration.message_chunk_size` (bytes; `0` = off, the
+  default) wraps each connection's sink in a `ChunkingSink` that splits outbound
+  messages larger than the limit into `FragmentStart`/`FragmentData`/`FragmentEnd`
+  frames (message types `100`/`101`/`102`, above the upstream range so `Ping`/`Pong`
+  are preserved); inbound reassembly (`FragmentBuffer`) is always on. A matching
+  in-repo TypeScript provider (`provider/`) speaks the same protocol — deploy clients
+  in lockstep, as the old `10/11/12` numbering is incompatible.
+
 ### Changed
 - Cap per-connection WebSocket buffers at 16 KiB (tungstenite defaults to a 128 KiB
   read buffer per socket). Per-connection memory drops ~148 KiB → ~39 KiB, so the

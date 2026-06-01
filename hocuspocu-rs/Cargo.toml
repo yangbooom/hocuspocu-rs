@@ -14,7 +14,7 @@ categories = ["network-programming", "web-programming::websocket"]
 [dependencies]
 # Published as `hocuspocu-rs-common`; aliased to `hocuspocus_common` in code to
 # mirror the upstream `@hocuspocus/common` module name.
-hocuspocus_common = { package = "hocuspocu-rs-common", path = "../hocuspocu-rs-common", version = "4.1.0" }
+hocuspocus_common = { package = "hocuspocu-rs-common", path = "../hocuspocu-rs-common", version = "4.2.0" }
 yrs = { version = "0.21", features = ["sync"] }
 tokio = { workspace = true }
 tokio-tungstenite = "0.26"
