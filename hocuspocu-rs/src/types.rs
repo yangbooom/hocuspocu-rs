@@ -20,6 +20,9 @@ pub enum MessageType {
     SyncStatus = 8,
     Ping = 9,
     Pong = 10,
+    FragmentStart = 100,
+    FragmentData = 101,
+    FragmentEnd = 102,
 }
 
 impl TryFrom<u64> for MessageType {
@@ -37,6 +40,9 @@ impl TryFrom<u64> for MessageType {
             8 => Ok(MessageType::SyncStatus),
             9 => Ok(MessageType::Ping),
             10 => Ok(MessageType::Pong),
+            100 => Ok(MessageType::FragmentStart),
+            101 => Ok(MessageType::FragmentData),
+            102 => Ok(MessageType::FragmentEnd),
             _ => Err(()),
         }
     }
@@ -488,6 +494,7 @@ pub struct Configuration {
     pub quiet: bool,
     pub unload_immediately: bool,
     pub extensions: Vec<Arc<dyn Extension>>,
+    pub message_chunk_size: usize,
 }
 
 impl Default for Configuration {
@@ -500,6 +507,7 @@ impl Default for Configuration {
             quiet: false,
             unload_immediately: true,
             extensions: Vec::new(),
+            message_chunk_size: 0,
         }
     }
 }

@@ -316,3 +316,18 @@ async fn test_document_awareness_yrs_compat() {
     let decoded = YrsAwarenessUpdate::decode_v1(&update).unwrap();
     assert!(!decoded.clients.is_empty());
 }
+
+#[test]
+fn test_fragment_message_type_numbers() {
+    assert_eq!(MessageType::FragmentStart as u64, 100);
+    assert_eq!(MessageType::FragmentData as u64, 101);
+    assert_eq!(MessageType::FragmentEnd as u64, 102);
+    // Ping/Pong are preserved for upstream compatibility.
+    assert_eq!(MessageType::Ping as u64, 9);
+    assert_eq!(MessageType::Pong as u64, 10);
+    assert_eq!(MessageType::try_from(100u64), Ok(MessageType::FragmentStart));
+    assert_eq!(MessageType::try_from(101u64), Ok(MessageType::FragmentData));
+    assert_eq!(MessageType::try_from(102u64), Ok(MessageType::FragmentEnd));
+    // chunking is off by default.
+    assert_eq!(Configuration::default().message_chunk_size, 0);
+}
