@@ -42,6 +42,7 @@ impl Hocuspocus {
         config.max_debounce = configuration.max_debounce;
         config.quiet = configuration.quiet;
         config.unload_immediately = configuration.unload_immediately;
+        config.message_chunk_size = configuration.message_chunk_size;
 
         let mut extensions = configuration.extensions;
         extensions.sort_by(|a, b| {

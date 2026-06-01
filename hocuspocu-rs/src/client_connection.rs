@@ -8,6 +8,7 @@ use hocuspocus_common::{self as common, WsReadyState};
 use crate::connection::Connection;
 use crate::document::Document;
 use crate::encoding::Decoder;
+use crate::fragment::ChunkingSink;
 use crate::hocuspocus::Hocuspocus;
 use crate::outgoing_message::OutgoingMessage;
 use crate::types::*;
@@ -366,19 +367,26 @@ impl ClientConnection {
             None => document_name.to_string(),
         };
 
+        let chunk_size = self.hocuspocus.configuration.read().await.message_chunk_size;
+        let sink: Arc<dyn WebSocketSink> = if chunk_size > 0 {
+            Arc::new(ChunkingSink::new(self.websocket.clone(), chunk_size))
+        } else {
+            self.websocket.clone()
+        };
+
         document
             .add_connection(
                 &conn_id,
                 &hook_payload.socket_id,
                 hook_payload.connection_config.read_only,
                 &message_address,
-                self.websocket.clone(),
+                sink.clone(),
             )
             .await;
 
         let connection = Connection::new(
             conn_id.clone(),
-            self.websocket.clone(),
+            sink,
             hook_payload.request.clone(),
             document.clone(),
             hook_payload.socket_id.clone(),
