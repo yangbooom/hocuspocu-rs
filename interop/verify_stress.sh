@@ -24,7 +24,7 @@ suite(){ local name="$1" port="$2" pid="$3"; local url="ws://127.0.0.1:$port"
     echo -n "[$(jget 'latency_ms.p50')/$(jget 'latency_ms.p99')] "; done; echo
   echo -n "  conn mem 800/80docs Δ-per-conn x2: "
   for i in 1 2; do mx=$(run_sampled "$pid" env BENCH_MODE=connect HP_URL="$url" CONN=800 CONN_DOCS=80 HOLD_MS=2500 node "$INTEROP/bench_client.mjs")
-    echo -n "[peak $(mb "$mx")MB, $(awk "BEGIN{printf \"%.0f\", ($mx-$base)*1024/800}")KB/conn] "; sleep 1; done; echo
+    echo -n "[peak $(mb "$mx")MB, $(( (mx - base) * 1024 / 800 ))KB/conn] "; sleep 1; done; echo
   echo -n "  throughput routed/s (40 snd,12s) x2: "
   for i in 1 2; do run_sampled "$pid" env BENCH_MODE=throughput HP_URL="$url" SENDERS=40 DURATION_MS=12000 node "$INTEROP/bench_client.mjs" >/dev/null
     echo -n "[$(jget 'routed_per_sec')] "; done; echo
