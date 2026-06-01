@@ -331,3 +331,30 @@ fn test_fragment_message_type_numbers() {
     // chunking is off by default.
     assert_eq!(Configuration::default().message_chunk_size, 0);
 }
+
+#[test]
+fn test_fragment_frame_builders_roundtrip() {
+    // FragmentData: [addr][101][var_string id][var_uint index][var_uint8array chunk]
+    let frame = OutgoingMessage::new("doc")
+        .write_fragment_data("abc", 3, &[9, 8, 7])
+        .to_vec();
+    let mut d = Decoder::new(&frame);
+    assert_eq!(d.read_var_string().unwrap(), "doc");
+    assert_eq!(d.read_var_uint().unwrap(), 101);
+    assert_eq!(d.read_var_string().unwrap(), "abc");
+    assert_eq!(d.read_var_uint().unwrap(), 3);
+    assert_eq!(d.read_var_uint8_array().unwrap(), vec![9, 8, 7]);
+    assert!(!d.has_content());
+
+    // FragmentStart / FragmentEnd: [addr][type][var_string id]
+    for (build, ty) in [
+        (OutgoingMessage::new("doc").write_fragment_start("id1").to_vec(), 100u64),
+        (OutgoingMessage::new("doc").write_fragment_end("id1").to_vec(), 102u64),
+    ] {
+        let mut d = Decoder::new(&build);
+        assert_eq!(d.read_var_string().unwrap(), "doc");
+        assert_eq!(d.read_var_uint().unwrap(), ty);
+        assert_eq!(d.read_var_string().unwrap(), "id1");
+        assert!(!d.has_content());
+    }
+}

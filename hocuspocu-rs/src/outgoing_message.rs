@@ -120,6 +120,29 @@ impl OutgoingMessage {
         self
     }
 
+    pub fn write_fragment_start(mut self, unique_id: &str) -> Self {
+        self.message_type = Some(MessageType::FragmentStart);
+        encoding::write_var_uint(&mut self.encoder, MessageType::FragmentStart as u64);
+        encoding::write_var_string(&mut self.encoder, unique_id);
+        self
+    }
+
+    pub fn write_fragment_data(mut self, unique_id: &str, index: usize, chunk: &[u8]) -> Self {
+        self.message_type = Some(MessageType::FragmentData);
+        encoding::write_var_uint(&mut self.encoder, MessageType::FragmentData as u64);
+        encoding::write_var_string(&mut self.encoder, unique_id);
+        encoding::write_var_uint(&mut self.encoder, index as u64);
+        encoding::write_var_uint8_array(&mut self.encoder, chunk);
+        self
+    }
+
+    pub fn write_fragment_end(mut self, unique_id: &str) -> Self {
+        self.message_type = Some(MessageType::FragmentEnd);
+        encoding::write_var_uint(&mut self.encoder, MessageType::FragmentEnd as u64);
+        encoding::write_var_string(&mut self.encoder, unique_id);
+        self
+    }
+
     pub fn to_vec(self) -> Vec<u8> {
         self.encoder
     }
