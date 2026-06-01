@@ -6,8 +6,8 @@ use tokio::sync::RwLock;
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::accept_hdr_async_with_config;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
-use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
-use tokio_tungstenite::tungstenite::protocol::Message;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+use tokio_tungstenite::tungstenite::protocol::{CloseFrame, Message, WebSocketConfig};
 
 use hocuspocus_common::WsReadyState;
 
@@ -178,13 +178,54 @@ impl Server {
         ws_stream: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
         request: RequestInfo,
     ) {
-        let (write, mut read) = ws_stream.split();
-        let write = Arc::new(tokio::sync::Mutex::new(write));
-
+        let (mut write, mut read) = ws_stream.split();
         let state = Arc::new(std::sync::RwLock::new(WsReadyState::Open));
 
+        // One writer task owns the sink half and drains an ordered command channel.
+        // This replaces the old per-message `tokio::spawn` + `Mutex` sink: hand-off
+        // is now a non-blocking channel push (lower latency, no lock contention) and
+        // frames reach each client in exact send() order. Bursts already queued are
+        // coalesced with feed() + a single flush; once the queue drains we flush and
+        // park on the next command, so idle messages still go out immediately.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<WriterCmd>();
+        {
+            let state = state.clone();
+            tokio::spawn(async move {
+                'outer: while let Some(mut cmd) = rx.recv().await {
+                    loop {
+                        match cmd {
+                            WriterCmd::Send(data) => {
+                                if write.feed(Message::Binary(data.into())).await.is_err() {
+                                    break 'outer;
+                                }
+                            }
+                            WriterCmd::Close { code, reason } => {
+                                let _ = write.flush().await;
+                                let frame = CloseFrame {
+                                    code: CloseCode::from(code),
+                                    reason: reason.into(),
+                                };
+                                let _ = write.send(Message::Close(Some(frame))).await;
+                                break 'outer;
+                            }
+                        }
+                        match rx.try_recv() {
+                            Ok(next) => cmd = next,
+                            Err(_) => break,
+                        }
+                    }
+                    if write.flush().await.is_err() {
+                        break;
+                    }
+                }
+                if let Ok(mut s) = state.write() {
+                    *s = WsReadyState::Closed;
+                }
+            });
+        }
+
         let ws_sink = Arc::new(TungsteniteWebSocketSink {
-            sender: write.clone(),
+            tx,
             state: state.clone(),
         });
 
@@ -255,31 +296,29 @@ impl Server {
     }
 }
 
+/// A command queued to a connection's writer task, in send() order.
+enum WriterCmd {
+    Send(Vec<u8>),
+    Close { code: u16, reason: String },
+}
+
 struct TungsteniteWebSocketSink {
-    sender: Arc<
-        tokio::sync::Mutex<
-            futures_util::stream::SplitSink<
-                tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
-                Message,
-            >,
-        >,
-    >,
+    tx: tokio::sync::mpsc::UnboundedSender<WriterCmd>,
     state: Arc<std::sync::RwLock<WsReadyState>>,
 }
 
 impl WebSocketSink for TungsteniteWebSocketSink {
     fn send(&self, data: Vec<u8>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let sender = self.sender.clone();
-        let state = self.state.clone();
-        tokio::spawn(async move {
-            let current_state = *state.read().unwrap();
-            if current_state == WsReadyState::Closing || current_state == WsReadyState::Closed {
-                return;
-            }
-            let mut sender = sender.lock().await;
-            let _ = sender.send(Message::Binary(data.into())).await;
-        });
-        Ok(())
+        let state = *self.state.read().unwrap();
+        if state == WsReadyState::Closing || state == WsReadyState::Closed {
+            return Ok(());
+        }
+        // Non-blocking, ordered hand-off to the writer task. A send error means the
+        // writer is gone (socket dead) — surface it so the caller marks the
+        // connection closed (Connection::send checks this).
+        self.tx
+            .send(WriterCmd::Send(data))
+            .map_err(|_| "websocket writer task closed".into())
     }
 
     fn close(
@@ -287,25 +326,15 @@ impl WebSocketSink for TungsteniteWebSocketSink {
         code: u16,
         reason: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let sender = self.sender.clone();
-        let state = self.state.clone();
-        let reason = reason.to_string();
         {
-            let mut s = state.write().unwrap();
+            let mut s = self.state.write().unwrap();
             *s = WsReadyState::Closing;
         }
-        tokio::spawn(async move {
-            let mut sender = sender.lock().await;
-            let close_frame = tokio_tungstenite::tungstenite::protocol::CloseFrame {
-                code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::from(
-                    code,
-                ),
-                reason: reason.into(),
-            };
-            let _ = sender.send(Message::Close(Some(close_frame))).await;
-            drop(sender);
-            let mut s = state.write().unwrap();
-            *s = WsReadyState::Closed;
+        // Queued behind any already-buffered frames so they flush before the close
+        // frame; a send error just means the writer already exited (already closed).
+        let _ = self.tx.send(WriterCmd::Close {
+            code,
+            reason: reason.to_string(),
         });
         Ok(())
     }
