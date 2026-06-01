@@ -1,6 +1,5 @@
-use hocuspocus_server::encoding::*;
-use hocuspocus_server::*;
-use std::sync::Arc;
+use hocuspocu_rs::encoding::*;
+use hocuspocu_rs::*;
 use yrs::sync::{Awareness, AwarenessUpdate as YrsAwarenessUpdate};
 use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
@@ -17,7 +16,11 @@ fn test_lib0_varuint_encoding_compat() {
         let mut decoder = Decoder::new(&buf);
         let decoded = decoder.read_var_uint().unwrap();
         assert_eq!(decoded, val, "varuint roundtrip failed for {}", val);
-        assert!(!decoder.has_content(), "decoder should be empty after reading {}", val);
+        assert!(
+            !decoder.has_content(),
+            "decoder should be empty after reading {}",
+            val
+        );
     }
 }
 
@@ -43,12 +46,7 @@ fn test_lib0_varstring_encoding_compat() {
 
 #[test]
 fn test_lib0_varuint8array_encoding_compat() {
-    let test_arrays: Vec<Vec<u8>> = vec![
-        vec![],
-        vec![0],
-        vec![1, 2, 3],
-        vec![255; 1000],
-    ];
+    let test_arrays: Vec<Vec<u8>> = vec![vec![], vec![0], vec![1, 2, 3], vec![255; 1000]];
 
     for arr in test_arrays {
         let mut buf = Vec::new();
@@ -147,8 +145,7 @@ fn test_awareness_message_wrapping() {
     let update = awareness.update().unwrap();
     let update_data = update.encode_v1();
 
-    let msg = OutgoingMessage::new("doc1")
-        .create_awareness_update_message(&update_data);
+    let msg = OutgoingMessage::new("doc1").create_awareness_update_message(&update_data);
 
     let data = msg.to_vec();
     let mut decoder = Decoder::new(&data);
@@ -177,7 +174,10 @@ fn test_auth_message_format() {
     assert_eq!(msg_type, MessageType::Auth as u64);
 
     let auth_type = decoder.read_var_uint().unwrap();
-    assert_eq!(auth_type, hocuspocus_common::AuthMessageType::Authenticated as u64);
+    assert_eq!(
+        auth_type,
+        hocuspocus_common::AuthMessageType::Authenticated as u64
+    );
 
     let scope = decoder.read_var_string().unwrap();
     assert_eq!(scope, "read-write");
@@ -193,7 +193,10 @@ fn test_auth_readonly_message_format() {
     decoder.read_var_uint().unwrap(); // msg type
 
     let auth_type = decoder.read_var_uint().unwrap();
-    assert_eq!(auth_type, hocuspocus_common::AuthMessageType::Authenticated as u64);
+    assert_eq!(
+        auth_type,
+        hocuspocus_common::AuthMessageType::Authenticated as u64
+    );
 
     let scope = decoder.read_var_string().unwrap();
     assert_eq!(scope, "readonly");
@@ -210,7 +213,10 @@ fn test_permission_denied_message_format() {
     assert_eq!(msg_type, MessageType::Auth as u64);
 
     let auth_type = decoder.read_var_uint().unwrap();
-    assert_eq!(auth_type, hocuspocus_common::AuthMessageType::PermissionDenied as u64);
+    assert_eq!(
+        auth_type,
+        hocuspocus_common::AuthMessageType::PermissionDenied as u64
+    );
 
     let reason = decoder.read_var_string().unwrap();
     assert_eq!(reason, "not-authorized");

@@ -1,0 +1,17 @@
+{
+  "name": "hocuspocu-rs-interop",
+  "private": true,
+  "type": "module",
+  "description": "Interop + load harness: real @hocuspocus/provider clients against hocuspocu-rs",
+  "scripts": {
+    "interop": "node multi_user_interop.mjs",
+    "bench": "node bench_client.mjs"
+  },
+  "dependencies": {
+    "@hocuspocus/provider": "4.1.0",
+    "@hocuspocus/server": "4.1.0",
+    "yjs": "^13.6.0",
+    "y-protocols": "^1.0.6",
+    "ws": "^8.18.0"
+  }
+}

@@ -17,14 +17,12 @@ pub struct ClientConnection {
     request: RequestInfo,
     socket_id: String,
     default_context: Context,
-    timeout: u64,
 
     document_connections: RwLock<HashMap<String, Arc<Connection>>>,
     incoming_message_queue: RwLock<HashMap<String, Vec<Vec<u8>>>>,
     document_connections_established: RwLock<std::collections::HashSet<String>>,
     hook_payloads: RwLock<HashMap<String, HookPayloadEntry>>,
-    on_close_callbacks:
-        RwLock<Vec<Arc<dyn Fn(Arc<Document>, OnDisconnectPayload) + Send + Sync>>>,
+    on_close_callbacks: RwLock<Vec<Arc<dyn Fn(Arc<Document>, OnDisconnectPayload) + Send + Sync>>>,
 
     last_message_received_at: RwLock<Instant>,
     ping_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -56,7 +54,6 @@ impl ClientConnection {
             request,
             socket_id,
             default_context,
-            timeout,
             document_connections: RwLock::new(HashMap::new()),
             incoming_message_queue: RwLock::new(HashMap::new()),
             document_connections_established: RwLock::new(std::collections::HashSet::new()),
@@ -82,7 +79,10 @@ impl ClientConnection {
 
         // Store handle directly - Mutex is uncontended at construction time
         {
-            let mut ph = cc.ping_handle.try_lock().expect("ping_handle uncontended at construction");
+            let mut ph = cc
+                .ping_handle
+                .try_lock()
+                .expect("ping_handle uncontended at construction");
             *ph = Some(handle);
         }
 
@@ -122,10 +122,9 @@ impl ClientConnection {
         let raw_key = match dec.read_var_string() {
             Ok(k) => k,
             Err(_) => {
-                let _ = self.websocket.close(
-                    common::unauthorized().code,
-                    &common::unauthorized().reason,
-                );
+                let _ = self
+                    .websocket
+                    .close(common::unauthorized().code, &common::unauthorized().reason);
                 return;
             }
         };
@@ -199,7 +198,7 @@ impl ClientConnection {
             established.contains(raw_key)
         };
 
-        if !(is_auth && !already_established) {
+        if !is_auth || already_established {
             let mut queue = self.incoming_message_queue.write().await;
             if let Some(q) = queue.get_mut(raw_key) {
                 q.push(data);
@@ -258,8 +257,8 @@ impl ClientConnection {
         match self.hocuspocus.hooks_on_connect(&on_connect_payload).await {
             Ok(Some(ctx)) => hook_payload.context = ctx,
             Err(e) => {
-                let msg = OutgoingMessage::new(&response_address)
-                    .write_permission_denied(&e.to_string());
+                let msg =
+                    OutgoingMessage::new(&response_address).write_permission_denied(&e.to_string());
                 let _ = self.websocket.send(msg.to_vec());
                 self.cleanup_document_state(raw_key).await;
                 return;
@@ -278,16 +277,21 @@ impl ClientConnection {
             provider_version: provider_version.clone(),
         };
 
-        match self.hocuspocus.hooks_on_authenticate(&on_auth_payload).await {
+        match self
+            .hocuspocus
+            .hooks_on_authenticate(&on_auth_payload)
+            .await
+        {
             Ok(Some(ctx)) => hook_payload.context = ctx,
             Err(e) => {
                 let reason = e.to_string();
-                let msg = OutgoingMessage::new(&response_address)
-                    .write_permission_denied(if reason.is_empty() {
+                let msg = OutgoingMessage::new(&response_address).write_permission_denied(
+                    if reason.is_empty() {
                         "permission-denied"
                     } else {
                         &reason
-                    });
+                    },
+                );
                 let _ = self.websocket.send(msg.to_vec());
                 self.cleanup_document_state(raw_key).await;
                 return;
@@ -340,7 +344,17 @@ impl ClientConnection {
         {
             Ok(doc) => doc,
             Err(e) => {
+                // matches TS: a createDocument failure surfaces as a PermissionDenied
+                // frame to the client before the connection state is cleaned up.
                 tracing::error!("Failed to create document: {:?}", e);
+                let reason = e.to_string();
+                let msg =
+                    OutgoingMessage::new(raw_key).write_permission_denied(if reason.is_empty() {
+                        "permission-denied"
+                    } else {
+                        &reason
+                    });
+                let _ = self.websocket.send(msg.to_vec());
                 self.cleanup_document_state(raw_key).await;
                 return;
             }

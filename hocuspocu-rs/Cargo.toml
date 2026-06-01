@@ -1,0 +1,30 @@
+[package]
+name = "hocuspocu-rs"
+description = "A Rust port of Hocuspocus — a real-time collaborative editing backend for Yjs, wire-compatible with @hocuspocus/server 4.1.0"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["yjs", "crdt", "collaboration", "websocket", "hocuspocus"]
+categories = ["network-programming", "web-programming::websocket"]
+
+[dependencies]
+# Published as `hocuspocu-rs-common`; aliased to `hocuspocus_common` in code to
+# mirror the upstream `@hocuspocus/common` module name.
+hocuspocus_common = { package = "hocuspocu-rs-common", path = "../hocuspocu-rs-common", version = "4.1.0" }
+yrs = { version = "0.21", features = ["sync"] }
+tokio = { workspace = true }
+tokio-tungstenite = "0.26"
+futures-util = "0.3"
+uuid = { version = "1", features = ["v4"] }
+dashmap = "6"
+async-trait = "0.1"
+bytes = "1"
+tracing = "0.1"
+http = "1"
+url = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

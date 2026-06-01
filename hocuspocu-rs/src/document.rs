@@ -105,7 +105,10 @@ impl Document {
         txn.state_vector().is_empty()
     }
 
-    pub fn merge(&self, documents: &[&Doc]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub fn merge(
+        &self,
+        documents: &[&Doc],
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         for doc in documents {
             let txn = doc.transact();
             let update = txn.encode_state_as_update_v1(&yrs::StateVector::default());
@@ -140,10 +143,7 @@ impl Document {
                 ) -> std::pin::Pin<
                     Box<
                         dyn std::future::Future<
-                                Output = Result<
-                                    Vec<u8>,
-                                    Box<dyn std::error::Error + Send + Sync>,
-                                >,
+                                Output = Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>,
                             > + Send,
                     >,
                 > + Send
@@ -181,11 +181,32 @@ impl Document {
     }
 
     pub async fn remove_connection(&self, connection_id: &str) {
-        let mut conns = self.connections.write().await;
-        if let Some(entry) = conns.remove(connection_id) {
-            for client_id in &entry.clients {
-                self.awareness.remove_state(*client_id);
+        // Drop the connection and collect its awareness client ids, releasing the
+        // write lock before broadcasting (which takes a read lock on connections).
+        let removed: Vec<u64> = {
+            let mut conns = self.connections.write().await;
+            match conns.remove(connection_id) {
+                Some(entry) => entry.clients.iter().copied().collect(),
+                None => return,
             }
+        };
+
+        if removed.is_empty() {
+            return;
+        }
+
+        for client_id in &removed {
+            self.awareness.remove_state(*client_id);
+        }
+
+        // Mirror upstream Document.removeConnection -> removeAwarenessStates ->
+        // handleAwarenessUpdate: announce the departed clients (now null state with
+        // a bumped clock) to the remaining peers so their cursors/presence clear
+        // immediately. Without this, an unclean disconnect (where the client never
+        // sends its own removal) leaves ghost awareness until each peer's ~30s
+        // awareness timeout. matches TS
+        if let Ok(update_data) = self.encode_awareness_update_clients(&removed) {
+            self.broadcast_awareness_to_connections(&update_data).await;
         }
     }
 
@@ -250,8 +271,13 @@ impl Document {
         self.awareness.iter().any(|_| true)
     }
 
-    pub fn encode_awareness_update_all(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-        let update = self.awareness.update().map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
+    pub fn encode_awareness_update_all(
+        &self,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+        let update = self
+            .awareness
+            .update()
+            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
         Ok(update.encode_v1())
     }
 
@@ -306,7 +332,8 @@ impl Document {
             }
         }
 
-        self.broadcast_awareness_to_connections(&processed_data).await;
+        self.broadcast_awareness_to_connections(&processed_data)
+            .await;
 
         Ok(())
     }
@@ -337,7 +364,10 @@ impl Document {
         txn.state_vector().encode_v1()
     }
 
-    pub fn apply_update(&self, update: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub fn apply_update(
+        &self,
+        update: &[u8],
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut txn = self.doc().transact_mut();
         let u = Update::decode_v1(update)?;
         txn.apply_update(u)?;

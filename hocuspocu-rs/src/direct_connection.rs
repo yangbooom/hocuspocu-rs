@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use yrs::Transact;
 
 use crate::document::Document;
 use crate::hocuspocus::Hocuspocus;
@@ -12,7 +11,11 @@ pub struct DirectConnection {
 }
 
 impl DirectConnection {
-    pub fn new(document: Arc<Document>, instance: Arc<Hocuspocus>, context: Option<Context>) -> Self {
+    pub fn new(
+        document: Arc<Document>,
+        instance: Arc<Hocuspocus>,
+        context: Option<Context>,
+    ) -> Self {
         let ctx = context.unwrap_or_else(empty_context);
 
         tokio::task::block_in_place(|| {
@@ -40,14 +43,14 @@ impl DirectConnection {
         }
     }
 
-    pub async fn transact<F>(&self, transaction: F) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+    pub async fn transact<F>(
+        &self,
+        transaction: F,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
     where
         F: FnOnce(&Document),
     {
-        let doc = self
-            .document
-            .as_ref()
-            .ok_or("direct connection closed")?;
+        let doc = self.document.as_ref().ok_or("direct connection closed")?;
 
         // Wrap in a yrs transaction - the callback can use doc.doc().transact_mut()
         // to make changes, matching the TS behavior where document.transact() is used
@@ -66,12 +69,10 @@ impl DirectConnection {
             let store_payload = OnStoreDocumentPayload {
                 clients_count: document.get_connections_count().await,
                 last_context: self.context.clone(),
-                last_transaction_origin: Some(TransactionOrigin::Local(
-                    LocalTransactionOrigin {
-                        skip_store_hooks: false,
-                        context: Some(self.context.clone()),
-                    },
-                )),
+                last_transaction_origin: Some(TransactionOrigin::Local(LocalTransactionOrigin {
+                    skip_store_hooks: false,
+                    context: Some(self.context.clone()),
+                })),
                 document: document.clone(),
                 document_name: document.name.clone(),
             };
@@ -80,8 +81,7 @@ impl DirectConnection {
                 .store_document_hooks(&document, store_payload, true)
                 .await;
 
-            if document.get_connections_count().await == 0
-                && !document.is_save_mutex_locked().await
+            if document.get_connections_count().await == 0 && !document.is_save_mutex_locked().await
             {
                 let disconnect_payload = OnDisconnectPayload {
                     clients_count: 0,
@@ -92,10 +92,7 @@ impl DirectConnection {
                     socket_id: "server".to_string(),
                 };
 
-                let _ = self
-                    .instance
-                    .hooks_on_disconnect(&disconnect_payload)
-                    .await;
+                let _ = self.instance.hooks_on_disconnect(&disconnect_payload).await;
 
                 self.instance.unload_document(&document).await;
             }

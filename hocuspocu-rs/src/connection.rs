@@ -26,14 +26,73 @@ pub struct Connection {
 
     on_close_callbacks:
         RwLock<Vec<Arc<dyn Fn(Arc<Document>, Option<common::CloseEvent>) + Send + Sync>>>,
-    before_handle_message_callback:
-        RwLock<Option<Arc<dyn Fn(String, Vec<u8>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send>> + Send + Sync>>>,
-    before_sync_callback:
-        RwLock<Option<Arc<dyn Fn(String, u64, Vec<u8>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send>> + Send + Sync>>>,
-    stateless_callback:
-        RwLock<Option<Arc<dyn Fn(OnStatelessPayload) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send>> + Send + Sync>>>,
-    token_sync_callback:
-        RwLock<Option<Arc<dyn Fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send>> + Send + Sync>>>,
+    before_handle_message_callback: RwLock<
+        Option<
+            Arc<
+                dyn Fn(
+                        String,
+                        Vec<u8>,
+                    ) -> std::pin::Pin<
+                        Box<
+                            dyn std::future::Future<
+                                    Output = Result<(), Box<dyn std::error::Error + Send + Sync>>,
+                                > + Send,
+                        >,
+                    > + Send
+                    + Sync,
+            >,
+        >,
+    >,
+    before_sync_callback: RwLock<
+        Option<
+            Arc<
+                dyn Fn(
+                        String,
+                        u64,
+                        Vec<u8>,
+                    ) -> std::pin::Pin<
+                        Box<
+                            dyn std::future::Future<
+                                    Output = Result<(), Box<dyn std::error::Error + Send + Sync>>,
+                                > + Send,
+                        >,
+                    > + Send
+                    + Sync,
+            >,
+        >,
+    >,
+    stateless_callback: RwLock<
+        Option<
+            Arc<
+                dyn Fn(
+                        OnStatelessPayload,
+                    ) -> std::pin::Pin<
+                        Box<
+                            dyn std::future::Future<
+                                    Output = Result<(), Box<dyn std::error::Error + Send + Sync>>,
+                                > + Send,
+                        >,
+                    > + Send
+                    + Sync,
+            >,
+        >,
+    >,
+    token_sync_callback: RwLock<
+        Option<
+            Arc<
+                dyn Fn(
+                        String,
+                    ) -> std::pin::Pin<
+                        Box<
+                            dyn std::future::Future<
+                                    Output = Result<(), Box<dyn std::error::Error + Send + Sync>>,
+                                > + Send,
+                        >,
+                    > + Send
+                    + Sync,
+            >,
+        >,
+    >,
     closed: std::sync::atomic::AtomicBool,
 }
 
@@ -90,7 +149,18 @@ impl Connection {
 
     pub async fn set_stateless_callback(
         &self,
-        callback: Arc<dyn Fn(OnStatelessPayload) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send>> + Send + Sync>,
+        callback: Arc<
+            dyn Fn(
+                    OnStatelessPayload,
+                ) -> std::pin::Pin<
+                    Box<
+                        dyn std::future::Future<
+                                Output = Result<(), Box<dyn std::error::Error + Send + Sync>>,
+                            > + Send,
+                    >,
+                > + Send
+                + Sync,
+        >,
     ) {
         let mut cb = self.stateless_callback.write().await;
         *cb = Some(callback);
@@ -98,7 +168,19 @@ impl Connection {
 
     pub async fn set_before_handle_message(
         &self,
-        callback: Arc<dyn Fn(String, Vec<u8>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send>> + Send + Sync>,
+        callback: Arc<
+            dyn Fn(
+                    String,
+                    Vec<u8>,
+                ) -> std::pin::Pin<
+                    Box<
+                        dyn std::future::Future<
+                                Output = Result<(), Box<dyn std::error::Error + Send + Sync>>,
+                            > + Send,
+                    >,
+                > + Send
+                + Sync,
+        >,
     ) {
         let mut cb = self.before_handle_message_callback.write().await;
         *cb = Some(callback);
@@ -106,7 +188,20 @@ impl Connection {
 
     pub async fn set_before_sync(
         &self,
-        callback: Arc<dyn Fn(String, u64, Vec<u8>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send>> + Send + Sync>,
+        callback: Arc<
+            dyn Fn(
+                    String,
+                    u64,
+                    Vec<u8>,
+                ) -> std::pin::Pin<
+                    Box<
+                        dyn std::future::Future<
+                                Output = Result<(), Box<dyn std::error::Error + Send + Sync>>,
+                            > + Send,
+                    >,
+                > + Send
+                + Sync,
+        >,
     ) {
         let mut cb = self.before_sync_callback.write().await;
         *cb = Some(callback);
@@ -114,7 +209,18 @@ impl Connection {
 
     pub async fn set_token_sync_callback(
         &self,
-        callback: Arc<dyn Fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send>> + Send + Sync>,
+        callback: Arc<
+            dyn Fn(
+                    String,
+                ) -> std::pin::Pin<
+                    Box<
+                        dyn std::future::Future<
+                                Output = Result<(), Box<dyn std::error::Error + Send + Sync>>,
+                            > + Send,
+                    >,
+                > + Send
+                + Sync,
+        >,
     ) {
         let mut cb = self.token_sync_callback.write().await;
         *cb = Some(callback);
@@ -137,7 +243,8 @@ impl Connection {
     }
 
     fn mark_closed(&self) {
-        self.closed.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.closed
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn send_stateless(&self, payload: &str) {
@@ -164,8 +271,8 @@ impl Connection {
                 .map(|e| e.reason.as_str())
                 .unwrap_or("Server closed the connection");
 
-            let close_msg = OutgoingMessage::new(self.message_address())
-                .write_close_message(reason);
+            let close_msg =
+                OutgoingMessage::new(self.message_address()).write_close_message(reason);
             self.send(&close_msg.to_vec());
             self.mark_closed();
         }
@@ -188,7 +295,22 @@ impl Connection {
 
     pub async fn get_before_sync_callback(
         &self,
-    ) -> Option<Arc<dyn Fn(String, u64, Vec<u8>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send>> + Send + Sync>> {
+    ) -> Option<
+        Arc<
+            dyn Fn(
+                    String,
+                    u64,
+                    Vec<u8>,
+                ) -> std::pin::Pin<
+                    Box<
+                        dyn std::future::Future<
+                                Output = Result<(), Box<dyn std::error::Error + Send + Sync>>,
+                            > + Send,
+                    >,
+                > + Send
+                + Sync,
+        >,
+    > {
         let cb = self.before_sync_callback.read().await;
         cb.clone()
     }
@@ -267,7 +389,18 @@ impl Connection {
                     self.before_sync_callback.read().await.as_ref().map(|cb| {
                         let cb = cb.clone();
                         let id = self.id.clone();
-                        move |sync_type: u64, payload: Vec<u8>| -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>> + Send>> {
+                        move |sync_type: u64,
+                              payload: Vec<u8>|
+                              -> std::pin::Pin<
+                            Box<
+                                dyn std::future::Future<
+                                        Output = Result<
+                                            (),
+                                            Box<dyn std::error::Error + Send + Sync>,
+                                        >,
+                                    > + Send,
+                            >,
+                        > {
                             let cb = cb.clone();
                             let id = id.clone();
                             Box::pin(async move { cb(id, sync_type, payload).await })
@@ -279,8 +412,7 @@ impl Connection {
             if let Err(e) = result {
                 let err_msg = e.to_string();
 
-                if err_msg.starts_with("stateless:") {
-                    let payload = &err_msg["stateless:".len()..];
+                if let Some(payload) = err_msg.strip_prefix("stateless:") {
                     let cb = self.stateless_callback.read().await;
                     if let Some(ref callback) = *cb {
                         let sp = OnStatelessPayload {
@@ -291,11 +423,17 @@ impl Connection {
                         };
                         let _ = callback(sp).await;
                     }
-                } else if err_msg.starts_with("token_sync:") {
-                    let token = &err_msg["token_sync:".len()..];
-                    let cb = self.token_sync_callback.read().await;
-                    if let Some(ref callback) = *cb {
-                        let _ = callback(token.to_string()).await;
+                } else if let Some(token) = err_msg.strip_prefix("token_sync:") {
+                    // Clone the callback out and drop the read guard before awaiting,
+                    // so we don't hold the RwLock across close().
+                    let callback = self.token_sync_callback.read().await.clone();
+                    if let Some(callback) = callback {
+                        if let Err(e) = callback(token.to_string()).await {
+                            // matches TS ClientConnection.onTokenSyncCallback: a rejected
+                            // token closes the connection with Unauthorized.
+                            tracing::error!("onTokenSync rejected token: {:?}", e);
+                            self.close(Some(common::unauthorized())).await;
+                        }
                     }
                 } else if err_msg == "close_requested" {
                     self.close(Some(common::CloseEvent {

@@ -1,6 +1,14 @@
 [workspace]
-members = ["hocuspocus-common", "hocuspocus-server"]
+members = ["hocuspocu-rs-common", "hocuspocu-rs"]
 resolver = "2"
+
+[workspace.package]
+version = "4.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Youngbum <dev@paprikadatalab.com>"]
+repository = "https://github.com/yangbooom/hocuspocu-rs"
+homepage = "https://github.com/yangbooom/hocuspocu-rs"
 
 [workspace.dependencies]
 yrs = "0.21"

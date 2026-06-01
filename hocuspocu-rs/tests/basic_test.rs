@@ -1,5 +1,5 @@
+use hocuspocu_rs::*;
 use hocuspocus_common::*;
-use hocuspocus_server::*;
 use std::sync::Arc;
 
 #[test]
@@ -266,7 +266,7 @@ async fn test_create_and_retrieve_document() {
 
 #[tokio::test]
 async fn test_encoding_roundtrip() {
-    use hocuspocus_server::encoding::*;
+    use hocuspocu_rs::encoding::*;
 
     let mut buf = Vec::new();
     write_var_uint(&mut buf, 42);
@@ -282,7 +282,7 @@ async fn test_encoding_roundtrip() {
 
 #[tokio::test]
 async fn test_encoding_large_varuint() {
-    use hocuspocus_server::encoding::*;
+    use hocuspocu_rs::encoding::*;
 
     let mut buf = Vec::new();
     write_var_uint(&mut buf, 0);
@@ -342,7 +342,7 @@ async fn test_outgoing_message_stateless() {
 
 #[tokio::test]
 async fn test_debouncer() {
-    use hocuspocus_server::util::Debouncer;
+    use hocuspocu_rs::util::Debouncer;
     use std::sync::atomic::{AtomicU32, Ordering};
     use tokio::time::Duration;
 
@@ -351,12 +351,17 @@ async fn test_debouncer() {
 
     let c = counter.clone();
     debouncer
-        .debounce("test", move || {
-            let c = c.clone();
-            async move {
-                c.fetch_add(1, Ordering::SeqCst);
-            }
-        }, 0, 10_000)
+        .debounce(
+            "test",
+            move || {
+                let c = c.clone();
+                async move {
+                    c.fetch_add(1, Ordering::SeqCst);
+                }
+            },
+            0,
+            10_000,
+        )
         .await;
 
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -365,7 +370,7 @@ async fn test_debouncer() {
 
 #[tokio::test]
 async fn test_debouncer_coalesces() {
-    use hocuspocus_server::util::Debouncer;
+    use hocuspocu_rs::util::Debouncer;
     use std::sync::atomic::{AtomicU32, Ordering};
     use tokio::time::Duration;
 
@@ -375,12 +380,17 @@ async fn test_debouncer_coalesces() {
     for _ in 0..5 {
         let c = counter.clone();
         debouncer
-            .debounce("test", move || {
-                let c = c.clone();
-                async move {
-                    c.fetch_add(1, Ordering::SeqCst);
-                }
-            }, 100, 10_000)
+            .debounce(
+                "test",
+                move || {
+                    let c = c.clone();
+                    async move {
+                        c.fetch_add(1, Ordering::SeqCst);
+                    }
+                },
+                100,
+                10_000,
+            )
             .await;
     }
 
