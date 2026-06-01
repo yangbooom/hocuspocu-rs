@@ -22,7 +22,7 @@ pub use client_connection::ClientConnection;
 pub use connection::Connection;
 pub use direct_connection::DirectConnection;
 pub use document::Document;
-pub use fragment::FragmentBuffer;
+pub use fragment::{ChunkingSink, FragmentBuffer};
 pub use hocuspocus::Hocuspocus;
 pub use incoming_message::IncomingMessage;
 pub use message_receiver::MessageReceiver;
