@@ -17,7 +17,7 @@ Cargo workspace (`resolver = "2"`), two library crates plus one runnable example
 
 Crate package names are `hocuspocu-rs` / `hocuspocu-rs-common`, but the crate **directories** are `hocuspocu-rs/` and `hocuspocu-rs-common/`. Publish order on crates.io: `hocuspocu-rs-common` first, then `hocuspocu-rs`.
 
-The `interop/` directory (workspace root, not part of either published crate) holds the JS interop + benchmark harness: `multi_user_interop.mjs` drives the server with the real `@hocuspocus/provider` 4.1.0; `run_bench.sh` benchmarks head-to-head against `@hocuspocus/server`. See `interop/README.md`.
+The `interop/` directory (workspace root, not part of either published crate) holds the JS interop + benchmark harness: `multi_user_interop.mjs` drives the server with the real `@hocuspocus/provider` 4.1.0; `run_bench.sh` benchmarks head-to-head against `@hocuspocus/server`. See `interop/README.md`. The `provider/` directory (also workspace root, not published) is the source-of-truth TypeScript provider implementing the fragment-chunking protocol (message numbers 100/101/102); the fragmentation interop test lives at `provider/test/fragment_interop.ts` and is run under `tsx`.
 
 ## Commands
 
@@ -58,6 +58,16 @@ Embed the server as a library: build a `Hocuspocus` (or a `Server` that wraps on
 ### Message protocol (`MessageType` in `types.rs`)
 
 `Unknown=-1, Sync=0, Awareness=1, Auth=2, QueryAwareness=3, SyncReply=4, Stateless=5, BroadcastStateless=6, Close=7, SyncStatus=8, Ping=9, Pong=10`. Within a `Sync`/`SyncReply` message the sub-type is the standard Yjs sync protocol: `SyncStep1=0`, `SyncStep2=1`, `Update=2`. These integer values are wire contract — do not renumber.
+
+**Fragment chunking (opt-in divergence from upstream).** `FragmentStart=100`,
+`FragmentData=101`, `FragmentEnd=102` carry an application-level fragmentation protocol for
+networks that drop large WebSocket messages. Numbers sit above the upstream range
+(`0..=10`, incl. `Ping=9`/`Pong=10`) so upstream compatibility is preserved. Outbound
+chunking is enabled by `Configuration.message_chunk_size` (bytes; `0` = off, the default)
+and installed as a transparent `ChunkingSink` around the connection's `WebSocketSink`.
+Inbound reassembly (`FragmentBuffer` on `Connection`) is **always on** — the client decides
+whether to fragment. The matching client is the in-repo `provider/` (TypeScript); the two
+must be deployed in lockstep (a client using the old `10/11/12` numbering is incompatible).
 
 ### Extension / hook system
 
