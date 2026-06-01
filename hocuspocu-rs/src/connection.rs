@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 
@@ -6,6 +6,7 @@ use hocuspocus_common::{self as common, WsReadyState};
 
 use crate::document::Document;
 use crate::encoding::Decoder;
+use crate::fragment::FragmentBuffer;
 use crate::message_receiver::MessageReceiver;
 use crate::outgoing_message::OutgoingMessage;
 use crate::types::*;
@@ -23,6 +24,7 @@ pub struct Connection {
     ws: Arc<dyn WebSocketSink>,
     message_queue: Mutex<VecDeque<Vec<u8>>>,
     processing: Mutex<()>,
+    fragment_buffers: Mutex<HashMap<String, FragmentBuffer>>,
 
     on_close_callbacks:
         RwLock<Vec<Arc<dyn Fn(Arc<Document>, Option<common::CloseEvent>) + Send + Sync>>>,
@@ -126,6 +128,7 @@ impl Connection {
             ws,
             message_queue: Mutex::new(VecDeque::new()),
             processing: Mutex::new(()),
+            fragment_buffers: Mutex::new(HashMap::new()),
             on_close_callbacks: RwLock::new(Vec::new()),
             before_handle_message_callback: RwLock::new(None),
             before_sync_callback: RwLock::new(None),
@@ -378,7 +381,75 @@ impl Connection {
                 }
             }
 
-            let receiver = MessageReceiver::new(raw_update, None);
+            // ── Inbound fragment reassembly (types 100/101/102) ──
+            // Unconditional: whether the client fragments is decided by the client's own
+            // chunk size, so the server always reassembles. Fragment frames are consumed
+            // here and never reach MessageReceiver; a completed series yields the original
+            // frame, which is dispatched exactly like a normal message.
+            let apply_bytes: Vec<u8> = {
+                let mut fdec = Decoder::new(&raw_update);
+                let _ = fdec.read_var_string(); // address (already validated above)
+                match fdec.read_var_uint() {
+                    Ok(t) if t == MessageType::FragmentStart as u64 => {
+                        if let Ok(id) = fdec.read_var_string() {
+                            let mut bufs = self.fragment_buffers.lock().await;
+                            if bufs.contains_key(&id) {
+                                tracing::warn!("FragmentStart for already-active fragment: {}", id);
+                            }
+                            bufs.insert(id, FragmentBuffer::new());
+                        }
+                        self.message_queue.lock().await.pop_front();
+                        continue;
+                    }
+                    Ok(t) if t == MessageType::FragmentData as u64 => {
+                        let id = fdec.read_var_string();
+                        let index = fdec.read_var_uint();
+                        let chunk = fdec.read_var_uint8_array();
+                        if let (Ok(id), Ok(index), Ok(chunk)) = (id, index, chunk) {
+                            let mut bufs = self.fragment_buffers.lock().await;
+                            match bufs.get_mut(&id) {
+                                Some(buf) => buf.add_chunk(index, chunk),
+                                None => tracing::warn!("FragmentData for unknown fragment: {}", id),
+                            }
+                        }
+                        self.message_queue.lock().await.pop_front();
+                        continue;
+                    }
+                    Ok(t) if t == MessageType::FragmentEnd as u64 => {
+                        let combined = if let Ok(id) = fdec.read_var_string() {
+                            let mut bufs = self.fragment_buffers.lock().await;
+                            match bufs.get_mut(&id) {
+                                Some(buf) => {
+                                    buf.mark_end();
+                                    if buf.is_complete() {
+                                        let bytes = buf.combine();
+                                        bufs.remove(&id);
+                                        Some(bytes)
+                                    } else {
+                                        None
+                                    }
+                                }
+                                None => {
+                                    tracing::warn!("FragmentEnd for unknown fragment: {}", id);
+                                    None
+                                }
+                            }
+                        } else {
+                            None
+                        };
+                        match combined {
+                            Some(bytes) => bytes, // fall through and dispatch the reassembled frame
+                            None => {
+                                self.message_queue.lock().await.pop_front();
+                                continue;
+                            }
+                        }
+                    }
+                    _ => raw_update.clone(), // normal (non-fragment) message
+                }
+            };
+
+            let receiver = MessageReceiver::new(apply_bytes, None);
             let result = receiver
                 .apply(
                     &self.document,
