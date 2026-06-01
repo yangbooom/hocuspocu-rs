@@ -31,6 +31,15 @@ cargo clippy --all-targets               # lint
 cargo fmt                                # format
 ```
 
+Run the bundled example server (env vars are optional):
+
+```sh
+cargo run --example server               # listens on :80
+HP_PORT=8088 HP_PERSIST=1 HP_LOG=1 cargo run --example server
+```
+
+`HP_PORT` (port), `HP_PERSIST` (in-memory persistence), `HP_LOG` (lifecycle logging), `HP_DEBOUNCE` (store debounce ms). The `interop/` harness has its own commands — see `interop/README.md`.
+
 Integration tests live in `hocuspocu-rs/tests/` (`basic_test.rs`, `integration_test.rs`, `wire_protocol_test.rs`). `wire_protocol_test.rs` is the guard for binary compatibility — run it after touching anything under `encoding.rs`, `incoming_message.rs`, `outgoing_message.rs`, `message_receiver.rs`, or awareness handling.
 
 ## Architecture (`hocuspocu-rs/src`)

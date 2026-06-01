@@ -1,9 +1,9 @@
 //! A minimal, runnable hocuspocus server.
 //!
 //! ```sh
-//! cargo run -p hocuspocus-server --example server
+//! cargo run -p hocuspocu-rs --example server
 //! # custom port + in-memory persistence + lifecycle logging:
-//! HP_PORT=8088 HP_PERSIST=1 HP_LOG=1 cargo run -p hocuspocus-server --example server
+//! HP_PORT=8088 HP_PERSIST=1 HP_LOG=1 cargo run -p hocuspocu-rs --example server
 //! ```
 //!
 //! Point any Yjs client at it, e.g. `@hocuspocus/provider`:
