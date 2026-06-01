@@ -1,0 +1,21 @@
+{
+  "name": "@hocuspocu-rs/provider",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TypeScript Hocuspocus provider with fragment chunking (types 100/101/102), source of truth for hocuspocu-rs",
+  "main": "index.ts",
+  "dependencies": {
+    "@hocuspocus/common": "^3.4.0",
+    "@lifeomic/attempt": "^3.0.3",
+    "lib0": "^0.2.108",
+    "ws": "^8.18.0",
+    "y-protocols": "^1.0.6",
+    "yjs": "^13.6.27"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.14",
+    "typescript": "^5.0.0"
+  }
+}
