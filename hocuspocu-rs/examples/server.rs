@@ -4,6 +4,8 @@
 //! cargo run -p hocuspocu-rs --example server
 //! # custom port + in-memory persistence + lifecycle logging:
 //! HP_PORT=8088 HP_PERSIST=1 HP_LOG=1 cargo run -p hocuspocu-rs --example server
+//! # enable outbound message chunking at 60 KB per frame:
+//! HP_CHUNK=61440 cargo run -p hocuspocu-rs --example server
 //! ```
 //!
 //! Point any Yjs client at it, e.g. `@hocuspocus/provider`:
@@ -98,6 +100,11 @@ async fn main() {
         .and_then(|d| d.parse().ok())
         .unwrap_or(200);
 
+    let message_chunk_size: usize = std::env::var("HP_CHUNK")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+
     let server = Server::with_config(ServerConfiguration {
         port,
         address: "127.0.0.1".to_string(),
@@ -106,6 +113,7 @@ async fn main() {
             debounce,
             max_debounce: debounce.max(1) * 5,
             extensions,
+            message_chunk_size,
             ..Configuration::default()
         },
     });
