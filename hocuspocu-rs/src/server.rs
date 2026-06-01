@@ -4,8 +4,9 @@ use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 
 use futures_util::{SinkExt, StreamExt};
-use tokio_tungstenite::accept_hdr_async;
+use tokio_tungstenite::accept_hdr_async_with_config;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::protocol::Message;
 
 use hocuspocus_common::WsReadyState;
@@ -114,7 +115,15 @@ impl Server {
                                 let captured: Arc<std::sync::Mutex<(String, HashMap<String, String>)>> =
                                     Arc::new(std::sync::Mutex::new((String::new(), HashMap::new())));
                                 let cap = captured.clone();
-                                let ws_stream = match accept_hdr_async(
+                                // Yjs frames are small, but tungstenite eagerly allocates a
+                                // 128 KiB read buffer per connection by default, which dominates
+                                // per-connection memory. A 16 KiB buffer cuts that ~8x. The
+                                // message-size limits (max_message_size 64 MiB) are unchanged, so
+                                // large initial syncs are still received fully, just in more reads.
+                                let ws_config = WebSocketConfig::default()
+                                    .read_buffer_size(16 * 1024)
+                                    .write_buffer_size(16 * 1024);
+                                let ws_stream = match accept_hdr_async_with_config(
                                     stream,
                                     move |req: &Request, resp: Response| -> Result<Response, ErrorResponse> {
                                         let url = req.uri().to_string();
@@ -129,6 +138,7 @@ impl Server {
                                         }
                                         Ok(resp)
                                     },
+                                    Some(ws_config),
                                 )
                                 .await
                                 {
