@@ -98,8 +98,11 @@ impl WebSocketSink for ChunkingSink {
         };
 
         let id = uuid::Uuid::new_v4().to_string();
-        self.inner
-            .send(OutgoingMessage::new(&address).write_fragment_start(&id).to_vec())?;
+        self.inner.send(
+            OutgoingMessage::new(&address)
+                .write_fragment_start(&id)
+                .to_vec(),
+        )?;
         for (index, chunk) in data.chunks(self.chunk_size).enumerate() {
             self.inner.send(
                 OutgoingMessage::new(&address)
@@ -107,11 +110,18 @@ impl WebSocketSink for ChunkingSink {
                     .to_vec(),
             )?;
         }
-        self.inner
-            .send(OutgoingMessage::new(&address).write_fragment_end(&id).to_vec())
+        self.inner.send(
+            OutgoingMessage::new(&address)
+                .write_fragment_end(&id)
+                .to_vec(),
+        )
     }
 
-    fn close(&self, code: u16, reason: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    fn close(
+        &self,
+        code: u16,
+        reason: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.inner.close(code, reason)
     }
 
@@ -155,7 +165,9 @@ mod tests {
 
     #[test]
     fn small_message_is_sent_raw() {
-        let cap = Arc::new(CaptureSink { sent: Mutex::new(Vec::new()) });
+        let cap = Arc::new(CaptureSink {
+            sent: Mutex::new(Vec::new()),
+        });
         let sink = ChunkingSink::new(cap.clone(), 1024);
         let msg = build_message(3);
         sink.send(msg.clone()).unwrap();
@@ -166,13 +178,19 @@ mod tests {
 
     #[test]
     fn large_message_fragments_and_reassembles() {
-        let cap = Arc::new(CaptureSink { sent: Mutex::new(Vec::new()) });
+        let cap = Arc::new(CaptureSink {
+            sent: Mutex::new(Vec::new()),
+        });
         let sink = ChunkingSink::new(cap.clone(), 8);
         let msg = build_message(50);
         sink.send(msg.clone()).unwrap();
 
         let frames = cap.sent.lock().unwrap().clone();
-        assert!(frames.len() >= 3, "expected start + data + end, got {}", frames.len());
+        assert!(
+            frames.len() >= 3,
+            "expected start + data + end, got {}",
+            frames.len()
+        );
 
         let mut buf = FragmentBuffer::new();
         let mut last_type = 0u64;
@@ -192,14 +210,24 @@ mod tests {
                 other => panic!("unexpected frame type {}", other),
             }
         }
-        assert_eq!(last_type, MessageType::FragmentEnd as u64, "last frame must be FragmentEnd");
+        assert_eq!(
+            last_type,
+            MessageType::FragmentEnd as u64,
+            "last frame must be FragmentEnd"
+        );
         assert!(buf.is_complete());
-        assert_eq!(buf.combine(), msg, "reassembled bytes must equal original message");
+        assert_eq!(
+            buf.combine(),
+            msg,
+            "reassembled bytes must equal original message"
+        );
     }
 
     #[test]
     fn zero_chunk_size_passes_through() {
-        let cap = Arc::new(CaptureSink { sent: Mutex::new(Vec::new()) });
+        let cap = Arc::new(CaptureSink {
+            sent: Mutex::new(Vec::new()),
+        });
         let sink = ChunkingSink::new(cap.clone(), 0);
         let msg = build_message(50);
         sink.send(msg.clone()).unwrap();

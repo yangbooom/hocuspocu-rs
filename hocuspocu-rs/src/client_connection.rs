@@ -367,7 +367,12 @@ impl ClientConnection {
             None => document_name.to_string(),
         };
 
-        let chunk_size = self.hocuspocus.configuration.read().await.message_chunk_size;
+        let chunk_size = self
+            .hocuspocus
+            .configuration
+            .read()
+            .await
+            .message_chunk_size;
         let sink: Arc<dyn WebSocketSink> = if chunk_size > 0 {
             Arc::new(ChunkingSink::new(self.websocket.clone(), chunk_size))
         } else {

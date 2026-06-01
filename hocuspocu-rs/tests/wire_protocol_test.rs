@@ -325,7 +325,10 @@ fn test_fragment_message_type_numbers() {
     // Ping/Pong are preserved for upstream compatibility.
     assert_eq!(MessageType::Ping as u64, 9);
     assert_eq!(MessageType::Pong as u64, 10);
-    assert_eq!(MessageType::try_from(100u64), Ok(MessageType::FragmentStart));
+    assert_eq!(
+        MessageType::try_from(100u64),
+        Ok(MessageType::FragmentStart)
+    );
     assert_eq!(MessageType::try_from(101u64), Ok(MessageType::FragmentData));
     assert_eq!(MessageType::try_from(102u64), Ok(MessageType::FragmentEnd));
     // chunking is off by default.
@@ -348,8 +351,18 @@ fn test_fragment_frame_builders_roundtrip() {
 
     // FragmentStart / FragmentEnd: [addr][type][var_string id]
     for (build, ty) in [
-        (OutgoingMessage::new("doc").write_fragment_start("id1").to_vec(), 100u64),
-        (OutgoingMessage::new("doc").write_fragment_end("id1").to_vec(), 102u64),
+        (
+            OutgoingMessage::new("doc")
+                .write_fragment_start("id1")
+                .to_vec(),
+            100u64,
+        ),
+        (
+            OutgoingMessage::new("doc")
+                .write_fragment_end("id1")
+                .to_vec(),
+            102u64,
+        ),
     ] {
         let mut d = Decoder::new(&build);
         assert_eq!(d.read_var_string().unwrap(), "doc");
