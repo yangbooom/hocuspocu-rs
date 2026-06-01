@@ -183,16 +183,22 @@ async function benchThroughput() {
 }
 
 // ── connect: time to connect + sync CONN clients ──
+// CONN_DOCS shards the clients across that many documents (default 1). Sharding
+// isolates pure connection/memory cost from the O(N^2) awareness storm you get
+// when every client joins one document.
 async function benchConnect() {
   const CONN = parseInt(process.env.CONN || "200", 10);
-  const docName = "bench-conn-" + Math.floor(performance.now());
+  const CONN_DOCS = Math.max(1, parseInt(process.env.CONN_DOCS || "1", 10));
+  const HOLD_MS = parseInt(process.env.HOLD_MS || "0", 10);
+  const base = "bench-conn-" + Math.floor(performance.now());
+  const docFor = (i) => (CONN_DOCS === 1 ? base : `${base}-${i % CONN_DOCS}`);
   const t0 = performance.now();
   const clients = [];
   // connect in waves to avoid SYN floods skewing the result
   const WAVE = 25;
   for (let i = 0; i < CONN; i += WAVE) {
     const batch = [];
-    for (let j = i; j < Math.min(CONN, i + WAVE); j++) batch.push(connect(docName));
+    for (let j = i; j < Math.min(CONN, i + WAVE); j++) batch.push(connect(docFor(j)));
     await Promise.all(
       batch.map((c) =>
         waitFor(() => c.provider.synced === true, { timeout: 30000, label: `sync ${c.id}` }),
@@ -205,10 +211,14 @@ async function benchConnect() {
     mode: "connect",
     url: URL,
     connections: CONN,
+    docs: CONN_DOCS,
     total_ms: +wall.toFixed(1),
     per_conn_ms: +(wall / CONN).toFixed(3),
     conn_per_sec: Math.round(CONN / (wall / 1000)),
   });
+  // Optionally hold the connections open (so the driver can sample steady-state
+  // RSS with all clients live) before tearing them down.
+  if (HOLD_MS > 0) await sleep(HOLD_MS);
   destroyAll(clients);
 }
 
