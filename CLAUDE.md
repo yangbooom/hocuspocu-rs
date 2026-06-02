@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A Rust port of [Hocuspocus](https://hocuspocus.dev) (`@hocuspocus/server` + `@hocuspocus/common`), a real-time collaborative-editing backend built on Yjs. It uses [`yrs`](https://docs.rs/yrs) (the Rust Yjs implementation, with its native `Awareness`) and `tokio-tungstenite` for WebSockets.
 
-**The overriding constraint is wire-protocol and behavioral compatibility with the upstream TypeScript implementation.** Existing Yjs clients (`y-websocket`, `@hocuspocus/provider`) must interoperate with this server unchanged, and it is meant to be a drop-in peer for other hocuspocus servers (incl. multi-server setups). The binary message format, the sync/awareness protocol, close-event codes, hook names, and debounce/unload semantics all mirror the JS reference — code comments like `// matches TS` mark spots where behavior was deliberately copied. Crate versions (`4.1.0`) track the upstream npm version. When changing protocol/encoding/awareness code, assume a JS client is on the other end and check the upstream behavior first; recent git history is almost entirely "compatibility gap" fixes.
+**The overriding constraint is wire-protocol and behavioral compatibility with the upstream TypeScript implementation.** Existing Yjs clients (`y-websocket`, `@hocuspocus/provider`) must interoperate with this server unchanged, and it is meant to be a drop-in peer for other hocuspocus servers (incl. multi-server setups). The binary message format, the sync/awareness protocol, close-event codes, hook names, and debounce/unload semantics all mirror the JS reference — code comments like `// matches TS` mark spots where behavior was deliberately copied. Crate versions (`4.1.0`) track the upstream npm version. When changing protocol/encoding/awareness code, assume a JS client is on the other end and check the upstream behavior first; recent git history is almost entirely "compatibility gap" fixes. (Crate version is now `4.2.0`.)
 
 ## Workspace layout
 
@@ -34,17 +34,17 @@ cargo fmt                                # format
 Run the bundled example server (env vars are optional):
 
 ```sh
-cargo run --example server               # listens on :80
+cargo run --example server               # example defaults to :8088 (HP_PORT)
 HP_PORT=8088 HP_PERSIST=1 HP_LOG=1 cargo run --example server
 ```
 
-`HP_PORT` (port), `HP_PERSIST` (in-memory persistence), `HP_LOG` (lifecycle logging), `HP_DEBOUNCE` (store debounce ms). The `interop/` harness has its own commands — see `interop/README.md`.
+`HP_PORT` (port), `HP_PERSIST` (in-memory persistence), `HP_LOG` (lifecycle logging), `HP_DEBOUNCE` (store debounce ms), `HP_CHUNK` (outbound fragment chunk size in bytes; `0` = off). The fragmentation interop test: start the server with `HP_CHUNK` set, then `cd provider && npm install && HP_URL=ws://127.0.0.1:8088 CHUNK=61440 npx tsx test/fragment_interop.ts` (CHUNK must match the server's `HP_CHUNK`). The `interop/` harness has its own commands — see `interop/README.md`.
 
 Integration tests live in `hocuspocu-rs/tests/` (`basic_test.rs`, `integration_test.rs`, `wire_protocol_test.rs`). `wire_protocol_test.rs` is the guard for binary compatibility — run it after touching anything under `encoding.rs`, `incoming_message.rs`, `outgoing_message.rs`, `message_receiver.rs`, or awareness handling.
 
 ## Architecture (`hocuspocu-rs/src`)
 
-Embed the server as a library: build a `Hocuspocus` (or a `Server` that wraps one), then feed it connections. There is **no builder type** — construct via `Hocuspocus::new(Some(Configuration { .. }))` (returns `Arc<Self>`) or `.configure(Configuration)`. `Configuration { name, timeout (60s), debounce (2s), max_debounce (10s), quiet, unload_immediately, extensions: Vec<Arc<dyn Extension>> }`. Extensions are sorted by `priority()` (higher runs first) at configure time.
+Embed the server as a library: build a `Hocuspocus` (or a `Server` that wraps one), then feed it connections. There is **no builder type** — construct via `Hocuspocus::new(Some(Configuration { .. }))` (returns `Arc<Self>`) or `.configure(Configuration)`. `Configuration { name, timeout (60s), debounce (2s), max_debounce (10s), quiet, unload_immediately, message_chunk_size (0 = off), extensions: Vec<Arc<dyn Extension>> }`. Extensions are sorted by `priority()` (higher runs first) at configure time.
 
 - **`hocuspocus.rs`** (the core, ~900 lines) — `Hocuspocus` owns `documents: RwLock<HashMap<String, Arc<Document>>>` plus `loading_documents`/`unloading_documents` maps that serialize concurrent load/unload of the same document name (a per-name `Mutex` holding the load result, so concurrent openers await one load). Also owns the `Debouncer`. **Hooks are not a separate manager** — each lifecycle event has a `hooks_*` method here that locks the config and iterates `extensions` in order. Key flows: `create_document`/`load_document` (runs `on_create_document` → `on_load_document` → installs the `yrs` update + awareness observers → `after_load_document`), `handle_document_update` (`on_change` then debounced store), `store_document_hooks` (debounced `on_store_document`/`after_store_document`, then maybe unload), `unload_document`, `handle_connection`, `open_direct_connection`.
 - **`document.rs`** — `Document` wraps a `yrs::Doc` and a native `yrs` `Awareness`, tracks connections, and registers `observe_update_v1` (fires on *every* mutation: wire updates and `DirectConnection` transactions alike → drives `on_change`/store) and an awareness `on_update` (drives `on_awareness_update`). Holds `before_broadcast_stateless` / `before_handle_awareness` callbacks wired up by `load_document`, and a `save_mutex` serializing stores.
@@ -53,6 +53,7 @@ Embed the server as a library: build a `Hocuspocus` (or a `Server` that wraps on
 - **`encoding.rs`** — lib0-compatible varint codec: a `Decoder<'a>` plus free functions `write_var_uint` / `write_var_string` / `write_var_uint8_array`. (No `Encoder` struct — outgoing buffers are plain `Vec<u8>`.)
 - **`incoming_message.rs`** / **`outgoing_message.rs`** — `IncomingMessage<'a>` reads a frame; `OutgoingMessage` builds one. **Every frame is `[var_string document_name][var_uint message_type][payload…]`** — the document name prefix is part of the wire format, not just routing.
 - **`message_receiver.rs`** — `MessageReceiver::apply` reads the document-name prefix + `MessageType` and dispatches. `BroadcastStateless` is server→client only and is rejected if received from a client.
+- **`fragment.rs`** — `ChunkingSink` (a `WebSocketSink` wrapper that splits outbound messages larger than `message_chunk_size` into `FragmentStart/Data/End` frames) and `FragmentBuffer` (reassembles inbound fragments by id, held on `Connection`). See the fragment-chunking note under the message protocol.
 - **`util/debounce.rs`** — `Debouncer` keyed by `"onStoreDocument-{name}"`, honoring `debounce`/`max_debounce`; supports `execute_now`, `is_debounced`, `is_currently_executing`.
 
 ### Message protocol (`MessageType` in `types.rs`)
@@ -93,3 +94,4 @@ Prefer adding an `Extension` over editing the core; that matches upstream and ke
 - **Concurrency:** shared state is `Arc<...>` behind `tokio::sync::RwLock`/`Mutex`; documents are `Arc<Document>` in a `RwLock<HashMap>`. `Hocuspocus`/`Server` are used as `Arc<Self>` (not `Clone`). Reuse the existing locking patterns rather than introducing new schemes, and watch lock-ordering across the load/unload maps.
 - **Awareness uses `yrs`'s native `Awareness`** — never hand-roll an awareness encoding; that was a deliberate wire-compatibility fix.
 - Public API is surfaced through each crate's `lib.rs` re-exports; add new public types there.
+- **`connection_config` is not hook-mutable (yet).** `on_authenticate`/`on_connect` receive it by value and `read_only` is never assigned anywhere — so a hook cannot currently make a connection read-only. This is why `message_chunk_size` lives on the global `Configuration` rather than per-connection.
